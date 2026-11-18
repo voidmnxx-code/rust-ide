@@ -15,9 +15,11 @@ class Env(context: Context) {
     val home = File(root, "home")
     val prefix = File(root, "usr")
     val tmp = File(root, "tmp")
+    val crashFile = File(root, "crash.log")
+    val logFile = File(root, "session.log")
 
     fun ensureDirs() {
-        listOf(home, prefix, tmp, File(prefix, "bin")).forEach { it.mkdirs() }
+        listOf(root, home, prefix, tmp, File(prefix, "bin")).forEach { it.mkdirs() }
     }
 
     fun isInstalled(id: String) = File(prefix, ".installed-$id").exists()

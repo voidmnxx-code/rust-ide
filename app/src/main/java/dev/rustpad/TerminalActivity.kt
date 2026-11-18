@@ -37,7 +37,14 @@ class TerminalActivity : AppCompatActivity() {
         env = Env(this)
         perms = PermissionManager(this)
         env.ensureDirs()
+        CrashLogger.install(env)
         buildUi()
+        CrashLogger.consume(env)?.let { append("!!! previous crash:\n$it\n") }
+        if (env.logFile.exists()) {
+            val tail = env.logFile.readLines().takeLast(15).joinToString("\n")
+            append("--- last session log (tail) ---\n$tail\n--------------------------------\n")
+            env.logFile.delete()
+        }
 
         append("RustPad 0.1 (phase 1)\nHOME=${env.home}\nPREFIX=${env.prefix}\n")
         if (!env.isInstalled("base")) {
@@ -120,6 +127,7 @@ class TerminalActivity : AppCompatActivity() {
     }
 
     private fun append(text: String) {
+        try { synchronized(env) { env.logFile.appendText(text) } } catch (_: Throwable) {}
         runOnUiThread {
             out.append(ansi.replace(text, ""))
             if (out.length() > 200_000) out.text = out.text.takeLast(100_000)
@@ -136,7 +144,10 @@ class TerminalActivity : AppCompatActivity() {
 
     // ---------- Bootstrap ----------
     private fun runBootstrap() {
+        runOnUiThread { window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) }
+        KeepAliveService.start(this, "Installing bootstrap...")
         io.execute {
+          try {
             val installer = BootstrapInstaller(env)
             for (stage in BootstrapConfig.STAGES) {
                 if (env.isInstalled(stage.id)) { append("[${stage.id}] already installed\n"); continue }
@@ -147,7 +158,15 @@ class TerminalActivity : AppCompatActivity() {
                     if (!stage.optional) break
                 }
             }
-            runOnUiThread { startShell() }
+          } catch (t: Throwable) {
+            append("FATAL: $t\n${t.stackTrace.take(8).joinToString("\n")}\n")
+          } finally {
+            KeepAliveService.stop(this)
+            runOnUiThread {
+                window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                startShell()
+            }
+          }
         }
     }
 
@@ -159,8 +178,8 @@ class TerminalActivity : AppCompatActivity() {
                     BootstrapInstaller(env).installFromStream(id, it) { m -> append(m + "\n") }
                 }
                 runOnUiThread { startShell() }
-            } catch (e: Exception) {
-                append("import failed: ${e.message}\n")
+            } catch (e: Throwable) {
+                append("import failed: $e\n")
             }
         }
     }
