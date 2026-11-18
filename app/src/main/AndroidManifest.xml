@@ -18,14 +18,24 @@
         android:theme="@style/Theme.RustPad">
 
         <activity
-            android:name=".TerminalActivity"
-            android:exported="true"
-            android:windowSoftInputMode="adjustResize">
+            android:name=".ProjectsActivity"
+            android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <activity
+            android:name=".EditorActivity"
+            android:exported="false"
+            android:windowSoftInputMode="adjustResize" />
+
+        <activity
+            android:name=".TerminalActivity"
+            android:exported="false"
+            android:windowSoftInputMode="adjustResize" />
+
         <service
             android:name=".KeepAliveService"
             android:exported="false"

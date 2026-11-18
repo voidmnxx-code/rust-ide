@@ -14,6 +14,7 @@ import android.widget.ScrollView
 import android.widget.TextView
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
+import java.io.File
 import java.util.concurrent.Executors
 
 class TerminalActivity : AppCompatActivity() {
@@ -138,7 +139,8 @@ class TerminalActivity : AppCompatActivity() {
     // ---------- الشل ----------
     private fun startShell() {
         session?.stop()
-        session = ShellSession(env, ::append) { code -> append("\n[shell exited: $code]\n") }
+        val dir = intent.getStringExtra("cwd")?.let { File(it) }?.takeIf { it.isDirectory } ?: env.home
+        session = ShellSession(env, dir, ::append) { code -> append("\n[shell exited: $code]\n") }
         try { session?.start() } catch (e: Exception) { append("shell error: ${e.message}\n") }
     }
 

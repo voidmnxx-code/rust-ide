@@ -8,6 +8,7 @@ import kotlin.concurrent.thread
 /** جلسة شل بسيطة (بدون PTY في المرحلة 1). */
 class ShellSession(
     private val env: Env,
+    private val dir: java.io.File,
     private val onOutput: (String) -> Unit,
     private val onExit: (Int) -> Unit,
 ) {
@@ -19,7 +20,7 @@ class ShellSession(
     fun start() {
         env.ensureDirs()
         val pb = ProcessBuilder(env.shellPath())
-            .directory(env.home)
+            .directory(dir)
             .redirectErrorStream(true)
         pb.environment().apply { clear(); putAll(env.environment()) }
         val p = pb.start()
