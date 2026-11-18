@@ -27,6 +27,7 @@ class ProjectsActivity : AppCompatActivity() {
         env.ensureDirs()
         CrashLogger.install(env)
         pm = ProjectManager(env)
+        AssetInstaller.install(this, env)
 
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -86,16 +87,19 @@ class ProjectsActivity : AppCompatActivity() {
             setTextColor(Color.BLACK)
         }
         AlertDialog.Builder(this).setTitle("New project").setView(input)
-            .setPositiveButton("Create") { _, _ ->
-                val name = input.text.toString().trim()
-                if (!pm.isValidName(name)) {
-                    Toast.makeText(this, "Use a-z, 0-9, _ or - (start with a letter)", Toast.LENGTH_LONG).show()
-                } else {
-                    val d = pm.create(name)
-                    if (d == null) Toast.makeText(this, "Already exists", Toast.LENGTH_SHORT).show()
-                    else { refresh(); open(d) }
-                }
-            }.setNegativeButton("Cancel", null).show()
+            .setPositiveButton("Console app") { _, _ -> create(input.text.toString().trim(), false) }
+            .setNeutralButton("Android app") { _, _ -> create(input.text.toString().trim(), true) }
+            .setNegativeButton("Cancel", null).show()
+    }
+
+    private fun create(name: String, android: Boolean) {
+        if (!pm.isValidName(name)) {
+            Toast.makeText(this, "Use a-z, 0-9, _ or - (start with a letter)", Toast.LENGTH_LONG).show()
+            return
+        }
+        val d = if (android) pm.createAndroid(name) else pm.create(name)
+        if (d == null) Toast.makeText(this, "Already exists", Toast.LENGTH_SHORT).show()
+        else { refresh(); open(d) }
     }
 
     private fun confirmDelete(dir: File) {

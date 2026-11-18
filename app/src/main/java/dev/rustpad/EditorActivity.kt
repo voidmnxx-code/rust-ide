@@ -94,6 +94,7 @@ class EditorActivity : AppCompatActivity() {
         btns.addView(flatButton("Check") { runCargo("check") })
         btns.addView(flatButton("Build") { runCargo("build") })
         btns.addView(flatButton("Run") { runCargo("run") })
+        btns.addView(flatButton("Export APK") { exportApk() })
         btns.addView(flatButton("Stop") { proc?.destroy() })
         btns.addView(flatButton("Output") { panel.visibility = if (panel.visibility == View.VISIBLE) View.GONE else View.VISIBLE })
         btns.addView(flatButton("Term") {
@@ -283,6 +284,62 @@ class EditorActivity : AppCompatActivity() {
             proc = null
             KeepAliveService.stop(this)
             appendOut("[cargo $sub exited with $code — $errors errors, $warnings warnings]\n")
+        }
+    }
+
+    // ---------- تصدير APK ----------
+    private fun exportApk() {
+        if (proc != null) { toast("Already running — tap Stop"); return }
+        if (!File(project, "app.properties").exists()) {
+            toast("Not an Android-app project. Create one with [Android app]."); return
+        }
+        if (!env.isInstalled("apk-tools")) { toast("apk-tools stage not installed (Terminal → Bootstrap)"); return }
+        save()
+        AssetInstaller.install(this, env)
+        output.text = ""; diagList.removeAllViews()
+        panel.visibility = View.VISIBLE
+        KeepAliveService.start(this, "Exporting APK")
+        thread(name = "export") {
+            var apk: String? = null
+            val code = try {
+                val pb = ProcessBuilder(
+                    File(env.prefix, "bin/bash").path, File(env.prefix, "bin/rustpad-export").path, project.path
+                ).directory(project).redirectErrorStream(true)
+                pb.environment().apply { clear(); putAll(env.environment()); put("CARGO_TERM_COLOR", "never") }
+                val p = pb.start()
+                proc = p
+                p.inputStream.bufferedReader().useLines { lines ->
+                    for (l in lines) {
+                        appendOut(l + "\n")
+                        if (l.startsWith("APK: ")) apk = l.removePrefix("APK: ").trim()
+                    }
+                }
+                p.waitFor()
+            } catch (t: Throwable) { appendOut("error: $t\n"); -1 }
+            proc = null
+            KeepAliveService.stop(this)
+            appendOut("[export exited with $code]\n")
+            val out = apk
+            if (code == 0 && out != null) runOnUiThread { offerInstall(File(out)) }
+        }
+    }
+
+    private fun offerInstall(apk: File) {
+        AlertDialog.Builder(this).setTitle("APK ready")
+            .setMessage("${apk.name} (${apk.length() / 1024} KB)\nSigned with the local RustPad key.")
+            .setPositiveButton("Install") { _, _ -> installApk(apk) }
+            .setNegativeButton("Close", null).show()
+    }
+
+    private fun installApk(apk: File) {
+        try {
+            val uri = androidx.core.content.FileProvider.getUriForFile(this, "$packageName.fp", apk)
+            startActivity(
+                Intent(Intent.ACTION_VIEW).setDataAndType(uri, "application/vnd.android.package-archive")
+                    .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            )
+        } catch (e: Exception) {
+            toast("Install failed: ${e.message}")
         }
     }
 

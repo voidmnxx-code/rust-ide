@@ -1,0 +1,29 @@
+package dev.rustpad
+
+import android.content.Context
+import android.system.Os
+import java.io.File
+
+/** ينسخ سكربت التصدير وقشرة التطبيق (classes.dex) من assets إلى $PREFIX عند كل تشغيل. */
+object AssetInstaller {
+    fun install(ctx: Context, env: Env) {
+        try {
+            env.ensureDirs()
+            val bin = File(env.prefix, "bin").apply { mkdirs() }
+            val script = ctx.assets.open("rustpad-export.sh").bufferedReader().readText()
+                .replace("@PREFIX@", env.prefix.path)
+            val target = File(bin, "rustpad-export")
+            target.writeText(script)
+            Os.chmod(target.path, 0x1ED) // 0755
+
+            val shellDir = File(env.prefix, "share/rustpad/shell").apply { mkdirs() }
+            ctx.assets.list("shell")?.forEach { name ->
+                ctx.assets.open("shell/$name").use { ins ->
+                    File(shellDir, name).outputStream().use { ins.copyTo(it) }
+                }
+            }
+        } catch (_: Throwable) {
+            // أصول مفقودة (بناء محلي بلا القشرة): يظهر الخطأ عند التصدير بدل الانهيار.
+        }
+    }
+}
