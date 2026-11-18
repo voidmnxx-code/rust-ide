@@ -10,9 +10,11 @@ import java.nio.file.LinkOption
 
 /** مسارات البيئة (أسلوب Termux): home للمشاريع، usr للأدوات. */
 class Env(context: Context) {
-    val home = File(context.filesDir, "home")
-    val prefix = File(context.filesDir, "usr")
-    val tmp = File(context.filesDir, "tmp")
+    // مسار ثابت /data/data/<pkg>/files (وليس /data/user/0) ليطابق المسارات المكتوبة في الحزم.
+    private val root = File("/data/data/${context.packageName}/files")
+    val home = File(root, "home")
+    val prefix = File(root, "usr")
+    val tmp = File(root, "tmp")
 
     fun ensureDirs() {
         listOf(home, prefix, tmp, File(prefix, "bin")).forEach { it.mkdirs() }
@@ -34,6 +36,10 @@ class Env(context: Context) {
         "PREFIX" to prefix.path,
         "TMPDIR" to tmp.path,
         "PATH" to "${prefix.path}/bin:/system/bin:/system/xbin",
+        "LD_LIBRARY_PATH" to "${prefix.path}/lib",
+        "SHELL" to shellPath(),
+        "JAVA_HOME" to prefix.path + "/lib/jvm/java-17-openjdk",
+        "SSL_CERT_FILE" to "${prefix.path}/etc/tls/cert.pem",
         "LANG" to "en_US.UTF-8",
         "TERM" to "dumb",
         "CARGO_HOME" to File(home, ".cargo").path,

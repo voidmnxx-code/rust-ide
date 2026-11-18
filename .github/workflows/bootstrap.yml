@@ -1,0 +1,34 @@
+name: Build Bootstrap
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  bootstrap:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install zstd
+        run: sudo apt-get update && sudo apt-get install -y zstd
+
+      - name: Build archives from Termux packages
+        run: |
+          python3 tools/bootstrap/build_bootstrap.py \
+            --app-id dev.rustpd \
+            --sdk-dir "$ANDROID_HOME" \
+            --out dist
+
+      - name: Publish release bootstrap-v1
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cat dist/SHA256SUMS
+          gh release delete bootstrap-v1 --yes --cleanup-tag || true
+          gh release create bootstrap-v1 dist/* \
+            --title "Bootstrap v1 (aarch64)" \
+            --notes "Termux-derived bootstrap, paths rewritten to /data/data/dev.rustpd. $(date -u +%F)"

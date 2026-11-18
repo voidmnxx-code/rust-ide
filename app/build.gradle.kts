@@ -8,7 +8,8 @@ android {
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "dev.rustpad"
+        // 10 أحرف = نفس طول com.termux، لإعادة كتابة المسارات في حزم Termux دون تغيير الحجم.
+        applicationId = "dev.rustpd"
         minSdk = 26
         // targetSdk=28 يسمح بتنفيذ الملفات من مجلد التطبيق (أسلوب Termux).
         // التوزيع عبر GitHub/F-Droid فقط، لا Google Play.
