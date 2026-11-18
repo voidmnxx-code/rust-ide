@@ -9,8 +9,8 @@ data class Stage(
 )
 
 object BootstrapConfig {
-    // TODO: غيّر OWNER/REPO إلى مستودعك، وانشر الأرشيفات في Release باسم bootstrap-v1
-    const val BASE_URL = "https://github.com/OWNER/REPO/releases/download/bootstrap-v1"
+    // TODO: غيّر voidmnxx-code/rust-ide إلى مستودعك، وانشر الأرشيفات في Release باسم bootstrap-v1
+    const val BASE_URL = "https://github.com/voidmnxx-code/rust-ide/releases/download/bootstrap-v1"
 
     val STAGES = listOf(
         Stage("base", "$BASE_URL/bootstrap-base-aarch64.tar.zst"),
