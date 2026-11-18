@@ -22,8 +22,22 @@ object AssetInstaller {
                     File(shellDir, name).outputStream().use { ins.copyTo(it) }
                 }
             }
+            linkJvmTools(env)
         } catch (_: Throwable) {
             // أصول مفقودة (بناء محلي بلا القشرة): يظهر الخطأ عند التصدير بدل الانهيار.
+        }
+    }
+
+    /** حزمة Termux تنشئ bin/java وغيرها في postinst؛ ننشئها هنا إن كانت مفقودة (java, keytool, ...). */
+    private fun linkJvmTools(env: Env) {
+        val bin = File(env.prefix, "bin")
+        File(env.prefix, "lib/jvm").listFiles()?.forEach { jdk ->
+            File(jdk, "bin").listFiles()?.forEach { tool ->
+                val link = File(bin, tool.name)
+                if (!link.exists() && !java.nio.file.Files.isSymbolicLink(link.toPath())) {
+                    try { Os.symlink("../lib/jvm/${jdk.name}/bin/${tool.name}", link.path) } catch (_: Throwable) {}
+                }
+            }
         }
     }
 }
