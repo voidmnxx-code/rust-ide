@@ -188,6 +188,25 @@ def add_android_sdk(stage_dir, sdk_dir, new_id):
     log(f"  added SDK files (build-tools {bt}, {plats[-1]})")
 
 
+def link_jvm_tools(stage_dir):
+    """Termux creates bin/java etc. in postinst (update-alternatives); we do it here."""
+    jvm = os.path.join(stage_dir, "lib/jvm")
+    if not os.path.isdir(jvm):
+        return
+    os.makedirs(os.path.join(stage_dir, "bin"), exist_ok=True)
+    n = 0
+    for d in sorted(os.listdir(jvm)):
+        bindir = os.path.join(jvm, d, "bin")
+        if not os.path.isdir(bindir):
+            continue
+        for tool in sorted(os.listdir(bindir)):
+            dst = os.path.join(stage_dir, "bin", tool)
+            if not os.path.lexists(dst):
+                os.symlink(os.path.join("..", "lib", "jvm", d, "bin", tool), dst)
+                n += 1
+    log(f"  linked {n} JVM tools into bin/")
+
+
 def pack(stage_dir, out_file):
     tar = subprocess.Popen(
         ["tar", "--numeric-owner", "--owner=0", "--group=0", "-C", stage_dir, "-cf", "-", "."],
@@ -236,6 +255,7 @@ def main():
             install_deb(download_deb(a.repo, pkgs[n], cache), stage_dir, OLD_ID)
         done.update(order)
         patch_tree(stage_dir, OLD_ID, a.app_id)
+        link_jvm_tools(stage_dir)
         if stage == "apk-tools":
             if not a.sdk_dir:
                 sys.exit("--sdk-dir (or ANDROID_HOME) required for apk-tools stage")
