@@ -20,7 +20,24 @@ android {
         ndk { abiFilters += "arm64-v8a" } // aarch64 فقط
     }
 
+    // مفتاح توقيع ثابت (من سر GitHub) كي تعمل التحديثات فوق النسخة المثبتة.
+    // بدونه يُستخدم مفتاح debug العشوائي الخاص بكل بناء.
+    val sharedKs: String? = System.getenv("RUSTPAD_KS_FILE")
+    if (sharedKs != null) {
+        signingConfigs {
+            create("shared") {
+                storeFile = file(sharedKs)
+                storePassword = "rustpad-ks"
+                keyAlias = "rustpad"
+                keyPassword = "rustpad-ks"
+            }
+        }
+    }
+
     buildTypes {
+        debug {
+            if (sharedKs != null) signingConfig = signingConfigs.getByName("shared")
+        }
         release { isMinifyEnabled = false }
     }
 
