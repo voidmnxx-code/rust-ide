@@ -22,7 +22,9 @@ class Env(context: Context) {
         listOf(root, home, prefix, tmp, File(prefix, "bin")).forEach { it.mkdirs() }
     }
 
-    fun isInstalled(id: String) = File(prefix, ".installed-$id").exists()
+    fun isInstalled(id: String) = File(prefix, ".installed-$id").exists() ||
+        // علامة قديمة كتبها الاستيراد الخاطئ (اسم الملف الكامل): الملفات مفكوكة فعلاً
+        File(prefix, ".installed-bootstrap-$id-aarch64").exists()
     fun markInstalled(id: String) { File(prefix, ".installed-$id").writeText("ok") }
 
     fun shellPath(): String {

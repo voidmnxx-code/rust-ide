@@ -29,8 +29,8 @@ class TerminalActivity : AppCompatActivity() {
     private val ansi = Regex("\u001B\\[[0-9;?]*[A-Za-z]")
 
     private val importLauncher =
-        registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-            if (uri != null) importBootstrap(uri)
+        registerForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+            if (uris.isNotEmpty()) importBootstrap(uris)
         }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -172,12 +172,30 @@ class TerminalActivity : AppCompatActivity() {
         }
     }
 
-    private fun importBootstrap(uri: Uri) {
+    /** اسم المرحلة من اسم الملف: bootstrap-<stage>-aarch64.tar.zst (مع تحمّل (1) وما شابه). */
+    private fun stageIdFor(uri: Uri): String? {
+        val name = contentResolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)
+            ?.use { if (it.moveToFirst()) it.getString(0) else null }
+            ?: uri.lastPathSegment?.substringAfterLast('/') ?: return null
+        val known = BootstrapConfig.STAGES.map { it.id }
+        // الأطول أولاً حتى لا يُلتقط "base" من اسم آخر
+        return known.sortedByDescending { it.length }.firstOrNull { name.contains("-$it-") || name.contains("bootstrap-$it") }
+    }
+
+    private fun importBootstrap(uris: List<Uri>) {
         io.execute {
             try {
-                val id = uri.lastPathSegment?.substringAfterLast('/')?.substringBefore('.') ?: "local"
-                contentResolver.openInputStream(uri)?.use {
-                    BootstrapInstaller(env).installFromStream(id, it) { m -> append(m + "\n") }
+                // الترتيب المنطقي: base ثم apk-tools ثم rust-analyzer
+                val order = BootstrapConfig.STAGES.map { it.id }
+                val items = uris.map { it to stageIdFor(it) }
+                for ((uri, id) in items.sortedBy { order.indexOf(it.second ?: "") }) {
+                    if (id == null) {
+                        append("skipped: could not tell the stage from the file name (expected bootstrap-<stage>-aarch64.tar.zst)\n")
+                        continue
+                    }
+                    contentResolver.openInputStream(uri)?.use {
+                        BootstrapInstaller(env).installFromStream(id, it) { m -> append(m + "\n") }
+                    }
                 }
                 runOnUiThread { startShell() }
             } catch (e: Throwable) {
