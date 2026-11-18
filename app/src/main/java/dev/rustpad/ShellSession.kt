@@ -14,6 +14,7 @@ class ShellSession(
     private var process: Process? = null
     private var stdin: OutputStream? = null
     private val writer = Executors.newSingleThreadExecutor()
+    @Volatile private var stopped = false
 
     fun start() {
         env.ensureDirs()
@@ -25,14 +26,18 @@ class ShellSession(
         process = p
         stdin = p.outputStream
         thread(isDaemon = true, name = "shell-reader") {
-            val reader = InputStreamReader(p.inputStream, Charsets.UTF_8)
-            val buf = CharArray(4096)
-            while (true) {
-                val n = reader.read(buf)
-                if (n < 0) break
-                onOutput(String(buf, 0, n))
+            try {
+                val reader = InputStreamReader(p.inputStream, Charsets.UTF_8)
+                val buf = CharArray(4096)
+                while (!stopped) {
+                    val n = reader.read(buf)
+                    if (n < 0) break
+                    onOutput(String(buf, 0, n))
+                }
+            } catch (_: java.io.IOException) {
+                // الإغلاق المتعمد من stop() يقطع القراءة؛ ليس خطأً.
             }
-            onExit(p.waitFor())
+            if (!stopped) onExit(try { p.waitFor() } catch (_: InterruptedException) { -1 })
         }
     }
 
@@ -46,6 +51,7 @@ class ShellSession(
     }
 
     fun stop() {
+        stopped = true
         process?.destroy()
         writer.shutdown()
     }
