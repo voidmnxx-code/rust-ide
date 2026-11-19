@@ -230,7 +230,7 @@ jni = "0.21"
 
 
 def add_vendor(stage_dir):
-    dest = os.path.join(stage_dir, "share/rustpad/vendor")
+    dest = os.path.abspath(os.path.join(stage_dir, "share/rustpad/vendor"))
     os.makedirs(os.path.dirname(dest), exist_ok=True)
     log("  cargo vendor ...")
     subprocess.run(["cargo", "vendor", "--manifest-path", VENDOR_MANIFEST, dest],
