@@ -934,8 +934,9 @@ class EditorActivity : AppCompatActivity() {
         val txt = output.text ?: return
         if (txt.isEmpty()) return
         val off = output.getOffsetForPosition(x, y).coerceIn(0, txt.length - 1)
-        val ls = txt.lastIndexOf('\n', off).let { if (it < 0) 0 else it + 1 }
+        val ls = (if (off > 0) txt.lastIndexOf('\n', off - 1) else -1).let { if (it < 0) 0 else it + 1 }
         val le = txt.indexOf('\n', off).let { if (it < 0) txt.length else it }
+        if (le <= ls) return
         val line = txt.substring(ls, le)
         val m = Regex("([\\w./-]+\\.(?:rs|toml)):(\\d+)(?::(\\d+))?").find(line) ?: return
         val path = m.groupValues[1].removePrefix("./")
