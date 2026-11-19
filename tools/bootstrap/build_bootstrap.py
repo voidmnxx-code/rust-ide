@@ -25,6 +25,8 @@ STAGES = {
     ),
     "apk-tools": (["openjdk-17", "aapt2"], []),
     "rust-analyzer": ([], ["rust-analyzer"]),
+    # sccache من Termux + مكتبات crates محمّلة مسبقاً (cargo vendor) للعمل بلا اتصال
+    "offline-crates": ([], ["sccache"]),
 }
 # Never installed (package managers / app-bound helpers we do not need).
 SKIP = {"apt", "dpkg", "termux-keyring", "termux-licenses", "game-repo", "science-repo"}
@@ -207,6 +209,52 @@ def link_jvm_tools(stage_dir):
     log(f"  linked {n} JVM tools into bin/")
 
 
+VENDOR_MANIFEST = os.path.join(os.path.dirname(os.path.abspath(__file__)), "vendor", "Cargo.toml")
+
+# مشروع اختبار يجب أن يُبنى بلا اتصال اعتماداً على المكتبات المحمّلة فقط
+VERIFY_TOML = """[package]
+name = "verify"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+rand = "0.8"
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+regex = "1"
+jni = "0.21"
+"""
+
+
+def add_vendor(stage_dir):
+    dest = os.path.join(stage_dir, "share/rustpad/vendor")
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    log("  cargo vendor ...")
+    subprocess.run(["cargo", "vendor", "--manifest-path", VENDOR_MANIFEST, dest],
+                   check=True, stdout=subprocess.DEVNULL)
+    n = len(os.listdir(dest))
+    size = sum(os.path.getsize(os.path.join(d, f)) for d, _, fs in os.walk(dest) for f in fs)
+    log(f"  vendored {n} crates, {size / 1e6:.0f} MB")
+    # تحقق: مشروع منفصل يجب أن يُحلَّ ويُفحص بلا شبكة اعتماداً على هذا المجلد فقط
+    with tempfile.TemporaryDirectory() as t:
+        os.makedirs(os.path.join(t, "src"))
+        open(os.path.join(t, "Cargo.toml"), "w").write(VERIFY_TOML)
+        open(os.path.join(t, "src/main.rs"), "w").write("fn main() {}\n")
+        env = dict(os.environ, CARGO_HOME=os.path.join(t, "home"), CARGO_NET_OFFLINE="true")
+        r = subprocess.run(
+            ["cargo", "check", "--offline",
+             "--config", 'source.crates-io.replace-with="vendored"',
+             "--config", f'source.vendored.directory="{dest}"'],
+            cwd=t, env=env, capture_output=True, text=True)
+        if r.returncode != 0:
+            log(r.stdout[-2000:]); log(r.stderr[-4000:])
+            sys.exit("vendor verification FAILED (offline build of the test project)")
+    log("  vendor verification OK (offline cargo check passed)")
+
+
 def pack(stage_dir, out_file):
     tar = subprocess.Popen(
         ["tar", "--numeric-owner", "--owner=0", "--group=0", "-C", stage_dir, "-cf", "-", "."],
@@ -236,7 +284,17 @@ def main():
     log(f"index: {len(pkgs)} packages")
 
     done, sums = set(), []
-    for stage in a.stages.split(","):
+    selected = a.stages.split(",")
+    for stage in STAGES:
+        if stage not in selected:
+            # مراحل لن تُبنى الآن: نحسب حزمها فقط حتى لا تتكرر داخل المراحل المبنية
+            req, opt = STAGES[stage]
+            if not a.only_packages:
+                try:
+                    done.update(closure(list(req) + [o for o in opt if o in pkgs], pkgs, provides, done))
+                except SystemExit:
+                    pass
+            continue
         required, optional = STAGES[stage]
         if a.only_packages:
             required, optional = a.only_packages.split(","), []
@@ -260,6 +318,8 @@ def main():
             if not a.sdk_dir:
                 sys.exit("--sdk-dir (or ANDROID_HOME) required for apk-tools stage")
             add_android_sdk(stage_dir, a.sdk_dir, a.app_id)
+        if stage == "offline-crates":
+            add_vendor(stage_dir)
         if a.no_pack:
             continue
         out = os.path.join(a.out, f"bootstrap-{stage}-{ARCH}.tar.zst")
@@ -269,7 +329,7 @@ def main():
         log(f"  {out}: {os.path.getsize(out) / 1e6:.1f} MB")
         shutil.rmtree(stage_dir, ignore_errors=True)
     if sums:
-        with open(os.path.join(a.out, "SHA256SUMS"), "w") as fh:
+        with open(os.path.join(a.out, "SHA256SUMS-" + "_".join(selected)), "w") as fh:
             fh.write("\n".join(sums) + "\n")
 
 

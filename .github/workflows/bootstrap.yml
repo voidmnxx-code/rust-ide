@@ -2,6 +2,10 @@ name: Build Bootstrap
 
 on:
   workflow_dispatch:
+    inputs:
+      stages:
+        description: "Stages to build (comma separated): base,apk-tools,rust-analyzer,offline-crates"
+        default: "base,apk-tools,rust-analyzer,offline-crates"
 
 permissions:
   contents: write
@@ -9,7 +13,7 @@ permissions:
 jobs:
   bootstrap:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
 
@@ -21,14 +25,18 @@ jobs:
           python3 tools/bootstrap/build_bootstrap.py \
             --app-id dev.rustpd \
             --sdk-dir "$ANDROID_HOME" \
+            --stages "${{ github.event.inputs.stages }}" \
             --out dist
 
-      - name: Publish release bootstrap-v1
+      - name: Publish to release bootstrap-v1 (keeps other assets)
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          cat dist/SHA256SUMS
-          gh release delete bootstrap-v1 --yes --cleanup-tag || true
-          gh release create bootstrap-v1 dist/* \
-            --title "Bootstrap v1 (aarch64)" \
-            --notes "Termux-derived bootstrap, paths rewritten to /data/data/dev.rustpd. $(date -u +%F)"
+          cat dist/SHA256SUMS-*
+          if gh release view bootstrap-v1 >/dev/null 2>&1; then
+            gh release upload bootstrap-v1 dist/* --clobber
+          else
+            gh release create bootstrap-v1 dist/* \
+              --title "Bootstrap v1 (aarch64)" \
+              --notes "Termux-derived bootstrap, paths rewritten to /data/data/dev.rustpd."
+          fi
