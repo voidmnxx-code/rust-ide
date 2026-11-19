@@ -10,11 +10,13 @@ object AssetInstaller {
         try {
             env.ensureDirs()
             val bin = File(env.prefix, "bin").apply { mkdirs() }
-            val script = ctx.assets.open("rustpad-export.sh").bufferedReader().readText()
-                .replace("@PREFIX@", env.prefix.path)
-            val target = File(bin, "rustpad-export")
-            target.writeText(script)
-            Os.chmod(target.path, 0x1ED) // 0755
+            for (name in listOf("rustpad-export", "rustpad-warm", "rustpad-crates")) {
+                val script = ctx.assets.open("$name.sh").bufferedReader().readText()
+                    .replace("@PREFIX@", env.prefix.path)
+                val target = File(bin, name)
+                target.writeText(script)
+                Os.chmod(target.path, 0x1ED) // 0755
+            }
 
             val shellDir = File(env.prefix, "share/rustpad/shell").apply { mkdirs() }
             ctx.assets.list("shell")?.forEach { name ->

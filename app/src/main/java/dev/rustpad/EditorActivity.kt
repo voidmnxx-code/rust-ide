@@ -292,6 +292,7 @@ class EditorActivity : AppCompatActivity() {
     private fun ensureRa(): RaClient? {
         if (!raWanted()) return null
         ra?.let { if (it.alive) return it }
+        CargoConfig.sync(env, settings)
         if (!BuildTuner.canBackgroundWork(this)) { raState = "RA: paused (hot/low battery)"; return null }
         val c = RaClient(env, project,
             onDiagnostics = { rel, list -> runOnUiThread { raDiags[rel] = list; refreshRaList() } },
@@ -430,8 +431,10 @@ class EditorActivity : AppCompatActivity() {
         updateStatus()
     }
 
-    private fun buildEnv(): Map<String, String> =
-        if (settings.useLld) mapOf("RUSTFLAGS" to "-C link-arg=-fuse-ld=lld") else emptyMap()
+    private fun buildEnv(): Map<String, String> {
+        CargoConfig.sync(env, settings)
+        return CargoConfig.buildEnv(env, settings)
+    }
 
     private fun runCargo(sub: String, silent: Boolean = false) {
         if (proc != null) {

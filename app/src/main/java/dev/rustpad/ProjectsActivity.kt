@@ -28,6 +28,7 @@ class ProjectsActivity : AppCompatActivity() {
         CrashLogger.install(env)
         pm = ProjectManager(env)
         AssetInstaller.install(this, env)
+        CargoConfig.sync(env, Settings(this))
 
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -42,7 +43,13 @@ class ProjectsActivity : AppCompatActivity() {
         bar.addView(flatButton("Terminal") {
             startActivity(Intent(this, TerminalActivity::class.java))
         })
-        bar.addView(flatButton("Settings") { SettingsDialog.show(this) {} })
+        bar.addView(flatButton("Settings") { SettingsDialog.show(this) { CargoConfig.sync(env, Settings(this)) } })
+        bar.addView(flatButton("Crates") {
+            startActivity(Intent(this, TerminalActivity::class.java).putExtra("cmd", "rustpad-crates | less"))
+        })
+        bar.addView(flatButton("Warm cache") {
+            startActivity(Intent(this, TerminalActivity::class.java).putExtra("cmd", "rustpad-warm"))
+        })
         root.addView(bar)
 
         banner = TextView(this).apply {

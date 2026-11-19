@@ -26,6 +26,7 @@ class TerminalActivity : AppCompatActivity() {
     private lateinit var input: EditText
     private val io = Executors.newSingleThreadExecutor()
     private var session: ShellSession? = null
+    private var cmdSent = false
     private val ansi = Regex("\u001B\\[[0-9;?]*[A-Za-z]")
 
     private val importLauncher =
@@ -69,6 +70,7 @@ class TerminalActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         session?.stop()
+        if (cmdSent) KeepAliveService.stop(this)
         io.shutdown()
         super.onDestroy()
     }
@@ -142,6 +144,14 @@ class TerminalActivity : AppCompatActivity() {
         val dir = intent.getStringExtra("cwd")?.let { File(it) }?.takeIf { it.isDirectory } ?: env.home
         session = ShellSession(env, dir, ::append) { code -> append("\n[shell exited: $code]\n") }
         try { session?.start() } catch (e: Exception) { append("shell error: ${e.message}\n") }
+        intent.getStringExtra("cmd")?.let { c ->
+            if (!cmdSent) {
+                cmdSent = true
+                KeepAliveService.start(this, "Running: $c")
+                append("\$ $c\n")
+                session?.send(c)
+            }
+        }
     }
 
     // ---------- Bootstrap ----------
