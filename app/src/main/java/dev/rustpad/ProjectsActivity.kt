@@ -26,7 +26,7 @@ class ProjectsActivity : AppCompatActivity() {
         env = Env(this)
         env.ensureDirs()
         CrashLogger.install(env)
-        pm = ProjectManager(env)
+        pm = ProjectManager(env, assets)
         AssetInstaller.install(this, env)
         CargoConfig.sync(env, Settings(this))
 
