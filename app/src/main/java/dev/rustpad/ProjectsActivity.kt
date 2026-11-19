@@ -44,6 +44,7 @@ class ProjectsActivity : AppCompatActivity() {
             startActivity(Intent(this, TerminalActivity::class.java))
         })
         bar.addView(flatButton("Settings") { SettingsDialog.show(this) { CargoConfig.sync(env, Settings(this)) } })
+        bar.addView(flatButton("Clone") { cloneDialog() })
         bar.addView(flatButton("Crates") {
             startActivity(Intent(this, TerminalActivity::class.java).putExtra("cmd", "rustpad-crates | less"))
         })
@@ -98,6 +99,20 @@ class ProjectsActivity : AppCompatActivity() {
             .setPositiveButton("Console app") { _, _ -> create(input.text.toString().trim(), false) }
             .setNeutralButton("Android app") { _, _ -> create(input.text.toString().trim(), true) }
             .setNegativeButton("Cancel", null).show()
+    }
+
+    private fun cloneDialog() {
+        val input = EditText(this).apply { hint = "https://github.com/user/repo.git"; setTextColor(Color.BLACK) }
+        AlertDialog.Builder(this).setTitle("Clone repository").setView(input)
+            .setPositiveButton("Clone") { _, _ ->
+                val url = input.text.toString().trim()
+                if (!Regex("^https://[A-Za-z0-9._~:/@%+-]+$").matches(url)) {
+                    Toast.makeText(this, "Only plain https URLs are supported", Toast.LENGTH_LONG).show()
+                } else {
+                    startActivity(Intent(this, TerminalActivity::class.java)
+                        .putExtra("cmd", "mkdir -p ~/projects && cd ~/projects && git clone '$url' && echo CLONE-DONE"))
+                }
+            }.setNegativeButton("Cancel", null).show()
     }
 
     private fun create(name: String, android: Boolean) {

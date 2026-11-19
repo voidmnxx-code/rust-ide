@@ -22,12 +22,16 @@ class BootstrapInstaller(private val env: Env) {
         try {
             log("[${stage.id}] downloading...")
             download(stage.url, archive, log)
-            if (stage.sha256.isNotBlank()) {
+            val expected = expectedSha(stage)
+            if (expected == null) {
+                log("[${stage.id}] no checksum published, skipping verification")
+            } else {
                 log("[${stage.id}] verifying sha256...")
                 val actual = sha256(archive)
-                if (!actual.equals(stage.sha256, ignoreCase = true)) {
-                    throw IOException("sha256 mismatch: $actual")
+                if (!actual.equals(expected, ignoreCase = true)) {
+                    throw IOException("sha256 mismatch (corrupted download, try again): expected ${expected.take(12)}... got ${actual.take(12)}...")
                 }
+                log("[${stage.id}] sha256 OK")
             }
             log("[${stage.id}] extracting...")
             FileInputStream(archive).use { extract(it, log) }
@@ -37,6 +41,27 @@ class BootstrapInstaller(private val env: Env) {
             archive.delete()
         }
     }
+
+    /** الـ hash من ملفات SHA256SUMS المنشورة بجانب الأرشيف في الـ Release (يكشف التلف لا العبث). */
+    private fun expectedSha(stage: Stage): String? {
+        if (stage.sha256.isNotBlank()) return stage.sha256
+        val file = stage.url.substringAfterLast('/')
+        val base = stage.url.substringBeforeLast('/')
+        for (name in listOf("SHA256SUMS-${stage.id}", "SHA256SUMS")) {
+            val txt = fetchText("$base/$name") ?: continue
+            for (line in txt.lines()) {
+                val p = line.trim().split(Regex("\\s+"))
+                if (p.size >= 2 && p.last().removePrefix("*") == file) return p[0]
+            }
+        }
+        return null
+    }
+
+    private fun fetchText(url: String): String? = try {
+        val c = URL(url).openConnection() as HttpURLConnection
+        c.connectTimeout = 15_000; c.readTimeout = 15_000; c.instanceFollowRedirects = true
+        try { if (c.responseCode == 200) c.inputStream.bufferedReader().readText() else null } finally { c.disconnect() }
+    } catch (_: Exception) { null }
 
     /** تثبيت من ملف محلي (استيراد عبر SAF). */
     fun installFromStream(id: String, input: InputStream, log: (String) -> Unit) {

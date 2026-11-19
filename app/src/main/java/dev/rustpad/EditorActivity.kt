@@ -2,9 +2,14 @@ package dev.rustpad
 
 import android.content.Context
 import android.content.Intent
+import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.Paint
+import android.graphics.Rect
 import android.graphics.Typeface
+import android.net.Uri
 import android.os.Bundle
+import android.system.Os
 import android.os.Handler
 import android.os.Looper
 import android.text.Editable
@@ -27,9 +32,46 @@ import kotlin.concurrent.thread
 
 class CodeEditText(ctx: Context) : EditText(ctx) {
     var onCursor: (() -> Unit)? = null
+    /** عرض الهامش بالبكسل (يُرسم داخل الحشو الأيسر). */
+    var gutterPx = 0
+    /** رقم السطر -> لون علامة (أحمر خطأ / أصفر تحذير). */
+    var lineMarks: Map<Int, Int> = emptyMap()
+
+    private val numPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        typeface = Typeface.MONOSPACE; textAlign = Paint.Align.RIGHT
+    }
+    private val bgPaint = Paint().apply { color = Color.parseColor("#1A1A1C") }
+    private val dim = Color.parseColor("#6B7078")
+    private val clip = Rect()
+
     override fun onSelectionChanged(selStart: Int, selEnd: Int) {
         super.onSelectionChanged(selStart, selEnd)
         onCursor?.invoke()
+    }
+
+    override fun onDraw(canvas: Canvas) {
+        super.onDraw(canvas)
+        val lay = layout ?: return
+        if (gutterPx <= 0 || !canvas.getClipBounds(clip)) return
+        canvas.drawRect(0f, clip.top.toFloat(), gutterPx.toFloat(), clip.bottom.toFloat(), bgPaint)
+        numPaint.textSize = textSize * 0.85f
+        val top = extendedPaddingTop
+        val first = lay.getLineForVertical((clip.top - top).coerceAtLeast(0))
+        val last = lay.getLineForVertical((clip.bottom - top).coerceAtLeast(0))
+        val t = text
+        var num = 1
+        val start = lay.getLineStart(first)
+        for (k in 0 until minOf(start, t.length)) if (t[k] == '\n') num++
+        val x = gutterPx - resources.displayMetrics.density * 6
+        for (i in first..last) {
+            val ls = lay.getLineStart(i)
+            val isStart = ls == 0 || t[ls - 1] == '\n'
+            if (i > first && isStart) num++
+            if (isStart) {
+                numPaint.color = lineMarks[num] ?: dim
+                canvas.drawText(num.toString(), x, (lay.getLineBaseline(i) + top).toFloat(), numPaint)
+            }
+        }
     }
 }
 
@@ -46,6 +88,10 @@ class EditorActivity : AppCompatActivity() {
 
     private lateinit var settings: Settings
     private lateinit var raList: LinearLayout
+    private lateinit var findBar: HorizontalScrollView
+    private lateinit var findInput: EditText
+    private lateinit var replInput: EditText
+    private val cargoDiags = ArrayList<Diag>()
     private var ra: RaClient? = null
     private val raDiags = HashMap<String, List<Diag>>()
     private var raState = ""
@@ -115,10 +161,39 @@ class EditorActivity : AppCompatActivity() {
             save()
             startActivity(Intent(this, TerminalActivity::class.java).putExtra("cwd", project.path))
         })
+        btns.addView(flatButton("Find") { toggleFind() })
+        btns.addView(flatButton("Git") { showGit() })
         btns.addView(flatButton("Settings") { SettingsDialog.show(this) { onSettingsChanged() } })
         bar.addView(HorizontalScrollView(this).apply { addView(btns); isHorizontalScrollBarEnabled = false },
             LinearLayout.LayoutParams(0, -2, 2f))
         root.addView(bar)
+
+        findInput = EditText(this).apply {
+            hint = "find  (or :123 = go to line)"; textSize = 13f; isSingleLine = true
+            setTextColor(Colors.TEXT); setHintTextColor(Colors.DIM)
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+            imeOptions = android.view.inputmethod.EditorInfo.IME_ACTION_SEARCH
+            setOnEditorActionListener { _, _, _ -> findNext(true); true }
+        }
+        replInput = EditText(this).apply {
+            hint = "replace"; textSize = 13f; isSingleLine = true
+            setTextColor(Colors.TEXT); setHintTextColor(Colors.DIM)
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+        }
+        val fb = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+            addView(findInput, LinearLayout.LayoutParams(dp(190), -2))
+            addView(replInput, LinearLayout.LayoutParams(dp(130), -2))
+            addView(flatButton("◀") { findNext(false) })
+            addView(flatButton("▶") { findNext(true) })
+            addView(flatButton("Replace") { replaceOne() })
+            addView(flatButton("All") { replaceAll() })
+            addView(flatButton("✕") { findBar.visibility = View.GONE })
+        }
+        findBar = HorizontalScrollView(this).apply {
+            addView(fb); visibility = View.GONE; setBackgroundColor(Colors.PANEL); isHorizontalScrollBarEnabled = false
+        }
+        root.addView(findBar)
 
         editor = CodeEditText(this).apply {
             typeface = Typeface.MONOSPACE; textSize = 14f
@@ -128,7 +203,8 @@ class EditorActivity : AppCompatActivity() {
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE or
                 InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS or InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD
             setHorizontallyScrolling(false)
-            setPadding(dp(8), dp(8), dp(8), dp(200))
+            setPadding(dp(52), dp(8), dp(8), dp(200))
+            gutterPx = dp(48)
             onCursor = { updateStatus() }
         }
         editor.addTextChangedListener(object : TextWatcher {
@@ -206,6 +282,7 @@ class EditorActivity : AppCompatActivity() {
         highlightNow()
         updateStatus()
         refreshRaList()
+        refreshMarks()
         handler.postDelayed({ raSync() }, 200)
     }
 
@@ -429,6 +506,7 @@ class EditorActivity : AppCompatActivity() {
         val e = list.count { it.level == "error" }; val w = list.size - e
         if (ra != null && ra!!.ready) { raState = "RA: ready ($e err, $w warn)" }
         updateStatus()
+        refreshMarks()
     }
 
     private fun buildEnv(): Map<String, String> {
@@ -445,7 +523,7 @@ class EditorActivity : AppCompatActivity() {
         if (!env.isInstalled("base")) { if (!silent) toast("Toolchain not installed (Terminal → Bootstrap)"); return }
         save()
         autoRunning = silent
-        output.text = ""; diagList.removeAllViews()
+        output.text = ""; diagList.removeAllViews(); cargoDiags.clear(); refreshMarks()
         if (silent) { buildState = "checking..."; updateStatus() }
         else { panel.visibility = View.VISIBLE; KeepAliveService.start(this, "cargo $sub") }
         val jobs = BuildTuner.jobs(this)
@@ -469,6 +547,177 @@ class EditorActivity : AppCompatActivity() {
         }
     }
 
+    // ---------- بحث / استبدال / انتقال لسطر ----------
+    private fun toggleFind() {
+        if (findBar.visibility == View.VISIBLE) { findBar.visibility = View.GONE; return }
+        findBar.visibility = View.VISIBLE
+        val a = editor.selectionStart; val b = editor.selectionEnd
+        if (a in 0 until b && b - a < 80) findInput.setText(editor.text.substring(a, b))
+        findInput.requestFocus()
+    }
+
+    private fun scrollToOffset(pos: Int) {
+        editor.post {
+            editor.layout?.let { lay ->
+                editorScroll.smoothScrollTo(0, maxOf(lay.getLineTop(lay.getLineForOffset(pos.coerceIn(0, editor.text.length))) - dp(60), 0))
+            }
+        }
+    }
+
+    private fun findNext(forward: Boolean) {
+        val q = findInput.text.toString()
+        if (q.isEmpty()) return
+        // ":123" ينتقل إلى السطر 123
+        Regex("^:(\\d+)$").find(q)?.let {
+            val pos = offsetOf(maxOf(it.groupValues[1].toInt() - 1, 0), 0)
+            editor.requestFocus(); editor.setSelection(pos); scrollToOffset(pos); return
+        }
+        val t = editor.text.toString()
+        var idx = if (forward) t.indexOf(q, editor.selectionEnd, true) else t.lastIndexOf(q, editor.selectionStart - 1, true)
+        if (idx < 0) idx = if (forward) t.indexOf(q, 0, true) else t.lastIndexOf(q, t.length, true)
+        if (idx < 0) { toast("Not found"); return }
+        editor.requestFocus()
+        editor.setSelection(idx, idx + q.length)
+        scrollToOffset(idx)
+    }
+
+    private fun replaceOne() {
+        val q = findInput.text.toString()
+        if (q.isEmpty()) return
+        val r = replInput.text.toString()
+        val a = editor.selectionStart; val b = editor.selectionEnd
+        if (a >= 0 && b - a == q.length && editor.text.substring(a, b).equals(q, true)) {
+            editor.editableText.replace(a, b, r)
+            editor.setSelection(a + r.length)
+        }
+        findNext(true)
+    }
+
+    private fun replaceAll() {
+        val q = findInput.text.toString()
+        if (q.isEmpty()) return
+        val r = replInput.text.toString()
+        val t = editor.text.toString()
+        var n = 0; var i = t.indexOf(q, 0, true)
+        while (i >= 0) { n++; i = t.indexOf(q, i + q.length, true) }
+        if (n == 0) { toast("Not found"); return }
+        editor.editableText.replace(0, t.length, t.replace(q, r, ignoreCase = true))
+        toast("$n replaced")
+    }
+
+    // ---------- علامات الأخطاء على الهامش ----------
+    private fun refreshMarks() {
+        val rel = current?.relativeTo(project)?.path
+        val m = HashMap<Int, Int>()
+        fun add(d: Diag) {
+            if (d.file == rel && d.line > 0) {
+                val c = if (d.level == "error") Colors.ERROR else Colors.WARN
+                if (m[d.line] != Colors.ERROR) m[d.line] = c
+            }
+        }
+        cargoDiags.forEach { add(it) }
+        if (rel != null) raDiags[rel]?.forEach { add(it) }
+        editor.lineMarks = m
+        editor.invalidate()
+    }
+
+    // ---------- Git ----------
+    private fun gitBin() = File(env.prefix, "bin/git")
+
+    private fun runGit(vararg steps: List<String>, reloadAfter: Boolean = false) {
+        if (proc != null) { toast("Busy — tap Stop"); return }
+        if (!gitBin().exists()) { toast("git not installed (Terminal → Bootstrap)"); return }
+        save()
+        output.text = ""; panel.visibility = View.VISIBLE
+        KeepAliveService.start(this, "git")
+        thread(name = "git") {
+            var code = 0
+            try {
+                for (s in steps) {
+                    appendOut("$ git ${s.joinToString(" ") { if (it.contains(' ')) "\"$it\"" else it }}\n")
+                    val pb = ProcessBuilder(listOf(gitBin().path) + s).directory(project).redirectErrorStream(true)
+                    pb.environment().apply {
+                        clear(); putAll(env.environment())
+                        put("GIT_TERMINAL_PROMPT", "0"); put("GIT_EDITOR", "true"); put("GIT_PAGER", "cat")
+                    }
+                    val p = pb.start()
+                    proc = p
+                    p.inputStream.bufferedReader().forEachLine { appendOut(it + "\n") }
+                    code = p.waitFor()
+                    if (code != 0) break
+                }
+            } catch (t: Throwable) { appendOut("error: $t\n"); code = -1 }
+            proc = null
+            KeepAliveService.stop(this)
+            appendOut("[git exited with $code]\n")
+            if (code == 0 && reloadAfter) runOnUiThread { current?.let { openFile(it) } }
+        }
+    }
+
+    private fun promptText(title: String, hint: String, onOk: (String) -> Unit) {
+        val input = EditText(this).apply { this.hint = hint; setTextColor(Color.BLACK) }
+        AlertDialog.Builder(this).setTitle(title).setView(input)
+            .setPositiveButton("OK") { _, _ -> input.text.toString().trim().let { if (it.isNotEmpty()) onOk(it) } }
+            .setNegativeButton("Cancel", null).show()
+    }
+
+    private fun showGit() {
+        val items = arrayOf(
+            "Status", "Commit all...", "Log (last 20)", "Diff (stat)", "Pull (rebase)", "Push",
+            "Init repository", "Set remote (origin)...", "Identity & GitHub token...",
+        )
+        AlertDialog.Builder(this).setTitle("Git — ${project.name}").setItems(items) { _, i ->
+            when (i) {
+                0 -> runGit(listOf("status", "-sb"))
+                1 -> promptText("Commit message", "message") { msg -> runGit(listOf("add", "-A"), listOf("commit", "-m", msg)) }
+                2 -> runGit(listOf("log", "--oneline", "-n", "20"))
+                3 -> runGit(listOf("diff", "--stat"))
+                4 -> runGit(listOf("pull", "--rebase"), reloadAfter = true)
+                5 -> runGit(listOf("push", "-u", "origin", "HEAD"))
+                6 -> {
+                    val gi = File(project, ".gitignore")
+                    if (!gi.exists()) gi.writeText("target/\ndist/\n")
+                    runGit(listOf("init", "-b", "main"))
+                }
+                7 -> promptText("Remote URL", "https://github.com/user/repo.git") { url ->
+                    runGit(listOf("config", "remote.origin.url", url),
+                        listOf("config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*"))
+                }
+                8 -> identityDialog()
+            }
+        }.show()
+    }
+
+    private fun identityDialog() {
+        val lay = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(16), dp(8), dp(16), 0) }
+        fun field(h: String, secret: Boolean = false) = EditText(this).apply {
+            hint = h; setTextColor(Color.BLACK); isSingleLine = true
+            inputType = InputType.TYPE_CLASS_TEXT or
+                if (secret) InputType.TYPE_TEXT_VARIATION_PASSWORD else InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+        }.also { lay.addView(it) }
+        val name = field("Name (commit author)")
+        val email = field("Email")
+        val user = field("GitHub username")
+        val token = field("Personal access token", secret = true)
+        AlertDialog.Builder(this).setTitle("Git identity")
+            .setMessage("The token is stored as plain text in the app's private folder (~/.git-credentials), like Termux.")
+            .setView(lay)
+            .setPositiveButton("Save") { _, _ ->
+                val steps = ArrayList<List<String>>()
+                if (name.text.isNotBlank()) steps.add(listOf("config", "--global", "user.name", name.text.toString().trim()))
+                if (email.text.isNotBlank()) steps.add(listOf("config", "--global", "user.email", email.text.toString().trim()))
+                if (user.text.isNotBlank() && token.text.isNotBlank()) {
+                    try {
+                        val f = File(env.home, ".git-credentials")
+                        f.writeText("https://${Uri.encode(user.text.toString().trim())}:${Uri.encode(token.text.toString().trim())}@github.com\n")
+                        Os.chmod(f.path, 0x180) // 0600
+                        steps.add(listOf("config", "--global", "credential.helper", "store"))
+                    } catch (e: Exception) { toast("Could not save token: ${e.message}") }
+                }
+                if (steps.isNotEmpty()) runGit(*steps.toTypedArray()) else toast("Nothing to save")
+            }.setNegativeButton("Cancel", null).show()
+    }
+
     // ---------- تصدير APK ----------
     private fun exportApk() {
         if (proc != null) { toast("Already running — tap Stop"); return }
@@ -478,7 +727,7 @@ class EditorActivity : AppCompatActivity() {
         if (!env.isInstalled("apk-tools")) { toast("apk-tools stage not installed (Terminal → Bootstrap)"); return }
         save()
         AssetInstaller.install(this, env)
-        output.text = ""; diagList.removeAllViews()
+        output.text = ""; diagList.removeAllViews(); cargoDiags.clear(); refreshMarks()
         panel.visibility = View.VISIBLE
         KeepAliveService.start(this, "Exporting APK")
         thread(name = "export") {
@@ -535,6 +784,7 @@ class EditorActivity : AppCompatActivity() {
     }
 
     private fun addDiag(d: Diag) {
+        cargoDiags.add(d); refreshMarks()
         val where = if (d.file != null) "  ${d.file}:${d.line}:${d.col}" else ""
         diagList.addView(TextView(this).apply {
             text = "${d.level}: ${d.message}$where"
