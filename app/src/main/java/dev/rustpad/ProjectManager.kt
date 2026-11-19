@@ -75,6 +75,10 @@ class ProjectManager(private val env: Env, private val assets: android.content.r
                 ?: error("template asset missing: $f")
             File(dir, "src/$f").writeText(text)
         }
+        File(dir, "res").mkdirs()
+        assets?.open("templates/android/logo.png")?.use { ins ->
+            File(dir, "res/logo.png").outputStream().use { ins.copyTo(it) }
+        }
         File(dir, ".gitignore").writeText("target/\ndist/\n")
         return dir
     }

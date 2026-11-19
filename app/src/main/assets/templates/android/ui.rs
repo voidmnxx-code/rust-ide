@@ -1,9 +1,11 @@
 //! إطار واجهة RustPad (بلا اعتماديات): تصف الواجهة بـ Rust، والقشرة (Java) ترسمها وتعيد إليك الأحداث.
 //! عادةً لا تحتاج إلى تعديل هذا الملف؛ عدّل lib.rs.
 //!
-//! العناصر: col, row, text, button, input, checkbox, list, progress, spacer
-//! التعديلات: .pad(dp) .gap(dp) .weight(w) .size(sp) .bold() .color("#RRGGBB") .center()
-//!            .multiline() .number() .password()
+//! العناصر: col, row, text, button, input, checkbox, list, list_sub, progress, spacer, image_bytes, image_file
+//! التعديلات: .pad(dp) .gap(dp) .weight(w) .size(sp) .bold() .color("#RRGGBB") .bg("#RRGGBB") .center()
+//!            .multiline() .number() .password() .w(dp) .h(dp) .on_click("id")
+//! التنقل: Ui::back(true) يعترض زر الرجوع ويرسل حدث "back" (احتفظ بمكدس شاشات في حالتك).
+//! التخزين: storage::get/set/remove (نصوص تُحفظ في مجلد التطبيق الخاص وتبقى بين مرات التشغيل).
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -58,6 +60,13 @@ impl Node {
     pub fn multiline(self) -> Node { self.with("multiline", "true".to_string()) }
     pub fn number(self) -> Node { self.with("kind", esc("number")) }
     pub fn password(self) -> Node { self.with("kind", esc("password")) }
+    /// خلفية العنصر.
+    pub fn bg(self, hex: &str) -> Node { self.with("bg", esc(hex)) }
+    /// عرض/ارتفاع ثابت بوحدة dp (مفيد للصور).
+    pub fn w(self, dp: u32) -> Node { self.with("w", dp.to_string()) }
+    pub fn h(self, dp: u32) -> Node { self.with("h", dp.to_string()) }
+    /// يجعل أي عنصر (نص، صورة، صف...) قابلاً للضغط ويرسل حدثاً بهذا المعرّف.
+    pub fn on_click(self, id: &str) -> Node { self.with("click", esc(id)) }
 
     fn write(&self, out: &mut String) {
         out.push_str("{\"t\":");
@@ -99,6 +108,32 @@ pub fn list(id: &str, items: &[String]) -> Node {
     let arr: Vec<String> = items.iter().map(|s| esc(s)).collect();
     Node::new("list").with("id", esc(id)).with("items", format!("[{}]", arr.join(",")))
 }
+/// قائمة بعنوان ووصف لكل عنصر؛ الضغط يرسل رقم العنصر (`ev.index()`).
+pub fn list_sub(id: &str, items: &[(String, String)]) -> Node {
+    let a: Vec<String> = items.iter().map(|(t, _)| esc(t)).collect();
+    let b: Vec<String> = items.iter().map(|(_, s)| esc(s)).collect();
+    Node::new("list").with("id", esc(id))
+        .with("items", format!("[{}]", a.join(",")))
+        .with("subs", format!("[{}]", b.join(",")))
+}
+/// صورة من بايتات PNG/JPEG (مثلاً `include_bytes!("../res/logo.png")`). استخدم .w() و .h() للحجم.
+pub fn image_bytes(data: &[u8]) -> Node { Node::new("image").with("b64", esc(&base64(data))) }
+/// صورة من ملف على الجهاز (مثلاً داخل `storage::data_dir()`).
+pub fn image_file(path: &str) -> Node { Node::new("image").with("path", esc(path)) }
+
+fn base64(d: &[u8]) -> String {
+    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut o = String::with_capacity(d.len() / 3 * 4 + 4);
+    for c in d.chunks(3) {
+        let n = (c[0] as u32) << 16 | (*c.get(1).unwrap_or(&0) as u32) << 8 | *c.get(2).unwrap_or(&0) as u32;
+        o.push(T[(n >> 18) as usize & 63] as char);
+        o.push(T[(n >> 12) as usize & 63] as char);
+        o.push(if c.len() > 1 { T[(n >> 6) as usize & 63] as char } else { '=' });
+        o.push(if c.len() > 2 { T[n as usize & 63] as char } else { '=' });
+    }
+    o
+}
+
 /// من 0.0 إلى 1.0
 pub fn progress(v: f32) -> Node { Node::new("progress").with("value", num(v.clamp(0.0, 1.0))) }
 pub fn spacer(dp: u32) -> Node { Node::new("spacer").with("size", dp.to_string()) }
@@ -108,10 +143,13 @@ pub struct Ui {
     title: Option<String>,
     toast: Option<String>,
     tick_ms: u32,
+    back: bool,
 }
 
 impl Ui {
-    pub fn new(root: Node) -> Ui { Ui { root, title: None, toast: None, tick_ms: 0 } }
+    pub fn new(root: Node) -> Ui { Ui { root, title: None, toast: None, tick_ms: 0, back: false } }
+    /// true = زر الرجوع في النظام يرسل حدث "back" بدل إغلاق التطبيق (أعد false من event لإغلاقه).
+    pub fn back(mut self, on: bool) -> Ui { self.back = on; self }
     pub fn title(mut self, t: impl Into<String>) -> Ui { self.title = Some(t.into()); self }
     /// رسالة قصيرة تظهر مرة واحدة مع هذا العرض.
     pub fn toast(mut self, t: impl Into<String>) -> Ui { self.toast = Some(t.into()); self }
@@ -122,7 +160,7 @@ impl Ui {
         let mut o = String::from("{");
         if let Some(t) = &self.title { o.push_str(&format!("\"title\":{},", esc(t))); }
         if let Some(t) = &self.toast { o.push_str(&format!("\"toast\":{},", esc(t))); }
-        o.push_str(&format!("\"tick_ms\":{},\"root\":", self.tick_ms));
+        o.push_str(&format!("\"tick_ms\":{},\"back\":{},\"root\":", self.tick_ms, self.back));
         self.root.write(&mut o);
         o.push('}');
         o
@@ -176,6 +214,28 @@ fn parse_inputs(raw: &str) -> HashMap<String, String> {
         if let Some((k, v)) = line.split_once('\t') { m.insert(unescape(k), unescape(v)); }
     }
     m
+}
+
+/// تخزين دائم بسيط (مفتاح/قيمة نصية) في مجلد التطبيق الخاص.
+pub mod storage {
+    use std::path::PathBuf;
+
+    /// مجلد بيانات التطبيق الخاص (تضبطه القشرة عبر RUSTPAD_DATA).
+    pub fn data_dir() -> PathBuf {
+        PathBuf::from(std::env::var("RUSTPAD_DATA").unwrap_or_else(|_| ".".to_string()))
+    }
+    fn path(key: &str) -> PathBuf {
+        let hex: String = key.bytes().map(|b| format!("{:02x}", b)).collect();
+        data_dir().join("kv").join(hex)
+    }
+    pub fn get(key: &str) -> Option<String> { std::fs::read_to_string(path(key)).ok() }
+    pub fn set(key: &str, value: &str) -> bool {
+        let p = path(key);
+        if let Some(d) = p.parent() { let _ = std::fs::create_dir_all(d); }
+        let tmp = p.with_extension("tmp");
+        std::fs::write(&tmp, value).is_ok() && std::fs::rename(&tmp, &p).is_ok()
+    }
+    pub fn remove(key: &str) { let _ = std::fs::remove_file(path(key)); }
 }
 
 static APP: Mutex<Option<Box<dyn App + Send>>> = Mutex::new(None);

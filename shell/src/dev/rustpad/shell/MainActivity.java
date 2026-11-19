@@ -1,12 +1,16 @@
 package dev.rustpad.shell;
 
 import android.app.Activity;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.system.Os;
 import android.text.InputType;
+import android.util.Base64;
 import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.View;
@@ -15,6 +19,7 @@ import android.view.inputmethod.EditorInfo;
 import android.widget.Button;
 import android.widget.CheckBox;
 import android.widget.EditText;
+import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ProgressBar;
 import android.widget.ScrollView;
@@ -37,6 +42,7 @@ public class MainActivity extends Activity {
     private final Handler handler = new Handler(Looper.getMainLooper());
     private ScrollView scroll;
     private int tickMs = 0;
+    private boolean interceptBack = false;
     private final Runnable tickTask = new Runnable() {
         @Override public void run() {
             if (tickMs <= 0) return;
@@ -48,6 +54,7 @@ public class MainActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        try { Os.setenv("RUSTPAD_DATA", getFilesDir().getPath(), true); } catch (Throwable ignored) { }
         scroll = new ScrollView(this);
         scroll.setFillViewport(true);
         setContentView(scroll);
@@ -85,9 +92,20 @@ public class MainActivity extends Activity {
             }
             String t = o.optString("toast", "");
             if (!t.isEmpty()) Toast.makeText(this, t, Toast.LENGTH_SHORT).show();
+            interceptBack = o.optBoolean("back", false);
             setTick(o.optInt("tick_ms", 0));
         } catch (Exception e) {
             showError("UI error: " + e);
+        }
+    }
+
+    @Override public void onBackPressed() {
+        if (!interceptBack) { super.onBackPressed(); return; }
+        try {
+            String r = Native.event("back", "", encodeInputs());
+            if (r == null || r.isEmpty()) super.onBackPressed(); else apply(r);
+        } catch (Throwable e) {
+            showError("Rust error: " + e);
         }
     }
 
@@ -129,6 +147,15 @@ public class MainActivity extends Activity {
 
     // ---------- بناء العناصر ----------
     private View build(JSONObject n) throws JSONException {
+        View v = buildCore(n);
+        String bg = n.optString("bg", "");
+        if (!bg.isEmpty()) { try { v.setBackgroundColor(Color.parseColor(bg)); } catch (IllegalArgumentException ignored) { } }
+        String click = n.optString("click", "");
+        if (!click.isEmpty()) { final String cid = click; v.setClickable(true); v.setOnClickListener(x -> send(cid, "")); }
+        return v;
+    }
+
+    private View buildCore(JSONObject n) throws JSONException {
         String t = n.optString("t");
         switch (t) {
             case "col":
@@ -185,17 +212,46 @@ public class MainActivity extends Activity {
                 l.setOrientation(LinearLayout.VERTICAL);
                 final String id = n.optString("id");
                 JSONArray items = n.optJSONArray("items");
+                JSONArray subs = n.optJSONArray("subs");
                 if (items != null) for (int i = 0; i < items.length(); i++) {
+                    LinearLayout cell = new LinearLayout(this);
+                    cell.setOrientation(LinearLayout.VERTICAL);
+                    cell.setPadding(dp(8), dp(12), dp(8), dp(12));
+                    cell.setBackgroundResource(android.R.drawable.list_selector_background);
                     TextView tv = new TextView(this);
                     tv.setText(items.getString(i));
                     tv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16);
-                    tv.setPadding(dp(8), dp(12), dp(8), dp(12));
-                    tv.setBackgroundResource(android.R.drawable.list_selector_background);
+                    cell.addView(tv);
+                    if (subs != null && i < subs.length()) {
+                        TextView sv = new TextView(this);
+                        sv.setText(subs.getString(i));
+                        sv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+                        sv.setTextColor(Color.GRAY);
+                        cell.addView(sv);
+                    }
                     final int idx = i;
-                    tv.setOnClickListener(v -> send(id, String.valueOf(idx)));
-                    l.addView(tv, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+                    cell.setOnClickListener(v -> send(id, String.valueOf(idx)));
+                    l.addView(cell, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
                 }
                 return l;
+            }
+            case "image": {
+                ImageView iv = new ImageView(this);
+                iv.setAdjustViewBounds(true);
+                iv.setScaleType(ImageView.ScaleType.FIT_CENTER);
+                Bitmap bm = null;
+                try {
+                    String b64 = n.optString("b64", "");
+                    if (!b64.isEmpty()) {
+                        byte[] d = Base64.decode(b64, Base64.DEFAULT);
+                        bm = BitmapFactory.decodeByteArray(d, 0, d.length);
+                    } else {
+                        String p = n.optString("path", "");
+                        if (!p.isEmpty()) bm = BitmapFactory.decodeFile(p);
+                    }
+                } catch (Throwable ignored) { }
+                if (bm != null) iv.setImageBitmap(bm);
+                return iv;
             }
             case "progress": {
                 ProgressBar p = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
@@ -234,6 +290,10 @@ public class MainActivity extends Activity {
             LinearLayout.LayoutParams lp = row
                 ? new LinearLayout.LayoutParams(w > 0 ? 0 : ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, w)
                 : new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, w > 0 ? 0 : ViewGroup.LayoutParams.WRAP_CONTENT, w);
+            int cw = c.optInt("w", 0), ch2 = c.optInt("h", 0);
+            if (cw > 0) lp.width = dp(cw);
+            if (ch2 > 0) lp.height = dp(ch2);
+            if (!row && (cw > 0)) lp.gravity = Gravity.CENTER_HORIZONTAL;
             if (i > 0) { if (row) lp.leftMargin = gap; else lp.topMargin = gap; }
             l.addView(v, lp);
         }
