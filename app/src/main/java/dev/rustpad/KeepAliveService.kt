@@ -7,33 +7,38 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.os.Build
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import android.os.PowerManager
+import java.util.concurrent.atomic.AtomicInteger
 
-/** خدمة مقدّمة + WakeLock تُبقي العملية حيّة أثناء العمليات الثقيلة (تحميل/فك Bootstrap). */
+/** خدمة مقدّمة + WakeLock تُبقي العملية حيّة أثناء العمليات الثقيلة (تحميل/بناء/git). */
 class KeepAliveService : Service() {
     private var lock: PowerManager.WakeLock? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+    private fun notification(text: String): Notification {
         val nm = getSystemService(NotificationManager::class.java)
         val b = if (Build.VERSION.SDK_INT >= 26) {
-            nm.createNotificationChannel(
-                NotificationChannel("work", "RustPad", NotificationManager.IMPORTANCE_LOW)
-            )
+            nm.createNotificationChannel(NotificationChannel("work", "RustPad", NotificationManager.IMPORTANCE_LOW))
             Notification.Builder(this, "work")
         } else Notification.Builder(this)
-        val n = b.setContentTitle("RustPad")
-            .setContentText(intent?.getStringExtra("text") ?: "Working...")
-            .setSmallIcon(android.R.drawable.stat_sys_download)
-            .setOngoing(true)
-            .build()
-        startForeground(1, n)
-        if (lock == null) {
-            lock = getSystemService(PowerManager::class.java)
-                .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "rustpad:work").apply { acquire(2 * 60 * 60 * 1000L) }
-        }
+        return b.setContentTitle("RustPad").setContentText(text)
+            .setSmallIcon(android.R.drawable.stat_sys_download).setOngoing(true).build()
+    }
+
+    override fun onCreate() {
+        super.onCreate()
+        // يجب إعلان الخدمة فوراً: لو دُمّرت قبل ذلك ينهار التطبيق (ForegroundServiceDidNotStartInTime).
+        startForeground(1, notification("Working..."))
+        lock = getSystemService(PowerManager::class.java)
+            .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "rustpad:work").apply { acquire(2 * 60 * 60 * 1000L) }
+    }
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        startForeground(1, notification(intent?.getStringExtra("text") ?: "Working..."))
         return START_NOT_STICKY
     }
 
@@ -43,10 +48,29 @@ class KeepAliveService : Service() {
     }
 
     companion object {
+        private val users = AtomicInteger(0)
+        private val main = Handler(Looper.getMainLooper())
+
         fun start(c: Context, text: String) {
-            val i = Intent(c, KeepAliveService::class.java).putExtra("text", text)
-            if (Build.VERSION.SDK_INT >= 26) c.startForegroundService(i) else c.startService(i)
+            users.incrementAndGet()
+            val app = c.applicationContext
+            val i = Intent(app, KeepAliveService::class.java).putExtra("text", text)
+            try {
+                if (Build.VERSION.SDK_INT >= 26) app.startForegroundService(i) else app.startService(i)
+            } catch (_: Throwable) {
+                users.decrementAndGet() // لا نريد أن تنهار الميزة الأساسية بسبب الإشعار
+            }
         }
-        fun stop(c: Context) { c.stopService(Intent(c, KeepAliveService::class.java)) }
+
+        /** إيقاف مؤجَّل بعدّاد: عمليات قصيرة متتالية لا تُسقط الخدمة قبل أن تستقر. */
+        fun stop(c: Context) {
+            val app = c.applicationContext
+            main.postDelayed({
+                if (users.decrementAndGet() <= 0) {
+                    users.set(0)
+                    app.stopService(Intent(app, KeepAliveService::class.java))
+                }
+            }, 2000)
+        }
     }
 }
