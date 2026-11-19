@@ -30,7 +30,89 @@ import java.io.File
 import java.util.concurrent.Executors
 import kotlin.concurrent.thread
 
+/** يحلّ محل كتلة مطويّة (حرف واحد U+FFFC) ويحتفظ بالنص المخفي. */
+class FoldSpan(val hidden: String) : android.text.style.ReplacementSpan() {
+    val hiddenLines = hidden.count { it == '\n' }
+    private val label = " \u22EF "
+    private val bg = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.parseColor("#33383F") }
+    override fun getSize(paint: Paint, text: CharSequence?, start: Int, end: Int, fm: Paint.FontMetricsInt?): Int =
+        paint.measureText(label).toInt() + 8
+
+    override fun draw(c: Canvas, text: CharSequence?, start: Int, end: Int, x: Float, top: Int, y: Int, bottom: Int, paint: Paint) {
+        val w = paint.measureText(label)
+        c.drawRoundRect(x + 2, top + 3f, x + w + 6, bottom - 2f, 8f, 8f, bg)
+        val old = paint.color
+        paint.color = Color.parseColor("#9AA3AE")
+        c.drawText(label, x + 4, y.toFloat(), paint)
+        paint.color = old
+    }
+}
+
 class CodeEditText(ctx: Context) : EditText(ctx) {
+    /** بدايات الأسطر القابلة للطي (في النص الظاهر). */
+    var foldStarts: Set<Int> = emptySet()
+    var onGutterTap: ((Int) -> Unit)? = null
+    var onFoldSpanTap: ((FoldSpan) -> Unit)? = null
+    var cutting = false
+    private var downX = 0f
+    private var downY = 0f
+    private var downT = 0L
+
+    /** النص الكامل لمجال [s,e) مع إرجاع المخفي. */
+    fun fullTextOf(s: Int, e: Int): String {
+        val ed = editableText
+        val sb = StringBuilder()
+        var p = s
+        for (sp in ed.getSpans(s, e, FoldSpan::class.java).sortedBy { ed.getSpanStart(it) }) {
+            val a = ed.getSpanStart(sp)
+            if (a < p) continue
+            sb.append(ed, p, a).append(sp.hidden)
+            p = ed.getSpanEnd(sp)
+        }
+        sb.append(ed, p, e)
+        return sb.toString()
+    }
+
+    override fun onTextContextMenuItem(id: Int): Boolean {
+        if (id == android.R.id.copy || id == android.R.id.cut) {
+            val a = minOf(selectionStart, selectionEnd); val b = maxOf(selectionStart, selectionEnd)
+            if (a >= 0 && b > a && editableText.getSpans(a, b, FoldSpan::class.java).isNotEmpty()) {
+                val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                cm.setPrimaryClip(android.content.ClipData.newPlainText("code", fullTextOf(a, b)))
+                if (id == android.R.id.cut) { cutting = true; try { editableText.delete(a, b) } finally { cutting = false } }
+                return true
+            }
+        }
+        return super.onTextContextMenuItem(id)
+    }
+
+    override fun onTouchEvent(ev: android.view.MotionEvent): Boolean {
+        val slop = context.dp(8)
+        when (ev.action) {
+            android.view.MotionEvent.ACTION_DOWN -> {
+                downX = ev.x; downY = ev.y; downT = ev.eventTime
+                if (gutterPx > 0 && ev.x < gutterPx) { super.onTouchEvent(ev); return true }
+            }
+            android.view.MotionEvent.ACTION_UP -> {
+                val tap = Math.abs(ev.x - downX) < slop && Math.abs(ev.y - downY) < slop && ev.eventTime - downT < 300
+                val lay = layout
+                if (tap && lay != null) {
+                    if (downX < gutterPx) {
+                        var ls = lay.getLineStart(lay.getLineForVertical((ev.y - extendedPaddingTop).toInt().coerceAtLeast(0)))
+                        val t = text
+                        while (ls > 0 && ls <= t.length && t[ls - 1] != '\n') ls--
+                        onGutterTap?.invoke(ls)
+                        return true
+                    }
+                    val off = getOffsetForPosition(ev.x, ev.y)
+                    val sp = editableText.getSpans((off - 1).coerceAtLeast(0), (off + 1).coerceAtMost(editableText.length), FoldSpan::class.java).firstOrNull()
+                    if (sp != null) { onFoldSpanTap?.invoke(sp); return true }
+                }
+            }
+        }
+        return super.onTouchEvent(ev)
+    }
+
     var onCursor: (() -> Unit)? = null
     /** عرض الهامش بالبكسل (يُرسم داخل الحشو الأيسر). */
     var gutterPx = 0
@@ -59,17 +141,35 @@ class CodeEditText(ctx: Context) : EditText(ctx) {
         val first = lay.getLineForVertical((clip.top - top).coerceAtLeast(0))
         val last = lay.getLineForVertical((clip.bottom - top).coerceAtLeast(0))
         val t = text
+        val ed = editableText
         var num = 1
         val start = lay.getLineStart(first)
         for (k in 0 until minOf(start, t.length)) if (t[k] == '\n') num++
+        if (start > 0) for (sp in ed.getSpans(0, start, FoldSpan::class.java)) num += sp.hiddenLines
         val x = gutterPx - resources.displayMetrics.density * 6
         for (i in first..last) {
             val ls = lay.getLineStart(i)
             val isStart = ls == 0 || t[ls - 1] == '\n'
-            if (i > first && isStart) num++
+            if (i > first) {
+                for (sp in ed.getSpans(lay.getLineStart(i - 1), ls, FoldSpan::class.java)) num += sp.hiddenLines
+                if (isStart) num++
+            }
             if (isStart) {
-                numPaint.color = lineMarks[num] ?: dim
+                val le = lay.getLineEnd(i)
+                val folded = ed.getSpans(ls, le, FoldSpan::class.java)
+                var col = lineMarks[num]
+                for (sp in folded) for (h in 1..sp.hiddenLines) {
+                    val m = lineMarks[num + h]
+                    if (m != null && (col == null || m == Colors.ERROR)) col = m
+                }
+                numPaint.color = col ?: dim
                 canvas.drawText(num.toString(), x, (lay.getLineBaseline(i) + top).toFloat(), numPaint)
+                if (folded.isNotEmpty() || ls in foldStarts) {
+                    numPaint.color = dim
+                    numPaint.textAlign = Paint.Align.LEFT
+                    canvas.drawText(if (folded.isNotEmpty()) "\u25B8" else "\u25BE", 2f, (lay.getLineBaseline(i) + top).toFloat(), numPaint)
+                    numPaint.textAlign = Paint.Align.RIGHT
+                }
             }
         }
     }
@@ -102,6 +202,9 @@ class EditorActivity : AppCompatActivity() {
     private val tabs = ArrayList<Tab>()
     private var tab: Tab? = null
     private var undoing = false
+    private var folding = false
+    private var restoreFold: Pair<FoldSpan, Int>? = null
+    @Volatile private var foldMap: Map<Int, IntArray> = emptyMap()
     private var pendingRemoved = ""
     private lateinit var findInput: EditText
     private lateinit var replInput: EditText
@@ -226,13 +329,20 @@ class EditorActivity : AppCompatActivity() {
             setPadding(dp(52), dp(8), dp(8), dp(200))
             gutterPx = dp(48)
             onCursor = { updateStatus() }
+            onGutterTap = { ls -> toggleFoldAt(ls) }
+            onFoldSpanTap = { sp -> unfold(sp) }
         }
         editor.addTextChangedListener(object : TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, st: Int, c: Int, a: Int) {
-                pendingRemoved = if (!loading && !undoing && s != null && c > 0) s.substring(st, st + c) else ""
+                pendingRemoved = if (!loading && !undoing && !folding && s != null && c > 0) s.substring(st, st + c) else ""
+                restoreFold = null
+                if (!loading && !folding && !undoing && !editor.cutting && c == 1 && a == 0 && s is Spanned) {
+                    s.getSpans(st, st + 1, FoldSpan::class.java).firstOrNull()?.let { restoreFold = it to st }
+                }
             }
             override fun onTextChanged(s: CharSequence, start: Int, before: Int, count: Int) {
                 if (loading) return
+                if (folding) { version++; return }
                 if (!undoing) recordEdit(start, pendingRemoved, s.substring(start, start + count))
                 if (!dirty) { dirty = true; refreshTabs() }
                 version++
@@ -241,7 +351,12 @@ class EditorActivity : AppCompatActivity() {
                 updateStatus()
                 onEdited(s, start, before, count)
             }
-            override fun afterTextChanged(e: Editable?) {}
+            override fun afterTextChanged(e: Editable?) {
+                val r = restoreFold ?: return
+                restoreFold = null
+                // حذف علامة الطي بمفرده = فتحها (لا نفقد الكود المخفي)
+                editor.post { insertHidden(r.first, r.second) }
+            }
         })
         editorScroll = ScrollView(this).apply { addView(editor) }
         root.addView(editorScroll, LinearLayout.LayoutParams(-1, 0, 1.2f))
@@ -271,6 +386,8 @@ class EditorActivity : AppCompatActivity() {
 
         // صف مفاتيح الرموز
         val keys = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        keys.addView(flatButton("Fold") { foldAtCursor() })
+        keys.addView(flatButton("Unfold all") { unfoldAll() })
         keys.addView(flatButton("Undo") { undo() })
         keys.addView(flatButton("Redo") { redo() })
         keys.addView(flatButton("Tab") { insert("    ") })
@@ -293,6 +410,7 @@ class EditorActivity : AppCompatActivity() {
         val t = editor.text
         var line = 1; var lineStart = 0
         for (i in 0 until minOf(pos, t.length)) if (t[i] == '\n') { line++; lineStart = i + 1 }
+        if (pos > 0) for (sp in editor.editableText.getSpans(0, minOf(pos, t.length), FoldSpan::class.java)) line += sp.hiddenLines
         val extra = listOf(if (TreeSitter.available) "hl:TS" else "hl:regex", raState, buildState).filter { it.isNotEmpty() }.joinToString("  |  ")
         status.text = "Ln $line, Col ${pos - lineStart + 1}${if (dirty) "  •  modified" else ""}" +
             if (extra.isNotEmpty()) "   |   $extra" else ""
@@ -322,7 +440,10 @@ class EditorActivity : AppCompatActivity() {
         if (t.undo.size > 500) t.undo.removeAt(0)
     }
 
+    private fun hasFolds() = editor.editableText.getSpans(0, editor.text.length, FoldSpan::class.java).isNotEmpty()
+
     private fun undo() {
+        if (hasFolds()) { toast("Unfold all before Undo"); return }
         val t = tab ?: return
         val e = t.undo.removeLastOrNull() ?: run { toast("Nothing to undo"); return }
         applyEdit(e.start, e.added.length, e.removed)
@@ -330,6 +451,7 @@ class EditorActivity : AppCompatActivity() {
     }
 
     private fun redo() {
+        if (hasFolds()) { toast("Unfold all before Redo"); return }
         val t = tab ?: return
         val e = t.redo.removeLastOrNull() ?: run { toast("Nothing to redo"); return }
         applyEdit(e.start, e.removed.length, e.added)
@@ -342,6 +464,85 @@ class EditorActivity : AppCompatActivity() {
         undoing = true
         try { ed.replace(s, en, text); editor.setSelection((s + text.length).coerceAtMost(ed.length)) }
         finally { undoing = false }
+    }
+
+    // ---------- طيّ الكود ----------
+    private fun clearUndoStacks() { tab?.let { it.undo.clear(); it.redo.clear() } }
+
+    private fun foldAtCursor() {
+        val t = editor.text
+        val pos = editor.selectionStart.coerceIn(0, t.length)
+        var ls = pos
+        while (ls > 0 && t[ls - 1] != '\n') ls--
+        if (foldMap[ls] == null || !toggleFoldAt(ls)) {
+            // ابحث عن أقرب كتلة تحتوي المؤشر
+            val best = foldMap.values.filter { it[0] < pos && pos <= it[1] }.maxByOrNull { it[0] }
+            if (best == null) { toast("No block here"); return }
+            foldRange(best[0] + 1, best[1])
+        }
+    }
+
+    private fun toggleFoldAt(ls: Int): Boolean {
+        val t = editor.text
+        val le = t.indexOf('\n', ls).let { if (it < 0) t.length else it }
+        val sp = editor.editableText.getSpans(ls, le, FoldSpan::class.java).firstOrNull()
+        if (sp != null) { unfold(sp); return true }
+        val r = foldMap[ls] ?: return false
+        if (r[1] >= t.length || t[r[0]] != '{' || t[r[1]] != '}') return false
+        foldRange(r[0] + 1, r[1])
+        return true
+    }
+
+    private fun foldRange(s: Int, e: Int) {
+        if (e <= s) return
+        val ed = editor.editableText
+        val hidden = editor.fullTextOf(s, e)
+        folding = true
+        try {
+            ed.replace(s, e, "\uFFFC")
+            ed.setSpan(FoldSpan(hidden), s, s + 1, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+            editor.setSelection(s + 1)
+        } finally { folding = false }
+        clearUndoStacks()
+        scheduleHighlight()
+    }
+
+    private fun unfold(sp: FoldSpan) {
+        val ed = editor.editableText
+        val s = ed.getSpanStart(sp)
+        if (s < 0) return
+        folding = true
+        try { ed.removeSpan(sp); ed.replace(s, s + 1, sp.hidden) } finally { folding = false }
+        clearUndoStacks()
+        scheduleHighlight()
+    }
+
+    private fun insertHidden(sp: FoldSpan, pos: Int) {
+        val ed = editor.editableText
+        folding = true
+        try { ed.insert(pos.coerceIn(0, ed.length), sp.hidden) } finally { folding = false }
+        clearUndoStacks()
+        scheduleHighlight()
+    }
+
+    private fun unfoldAll() {
+        val ed = editor.editableText
+        val spans = ed.getSpans(0, ed.length, FoldSpan::class.java).sortedByDescending { ed.getSpanStart(it) }
+        if (spans.isEmpty()) return
+        val sel = editor.selectionStart
+        var delta = 0
+        folding = true
+        try {
+            for (sp in spans) {
+                val s = ed.getSpanStart(sp)
+                if (s < 0) continue
+                if (s < sel) delta += sp.hidden.length - 1
+                ed.removeSpan(sp); ed.replace(s, s + 1, sp.hidden)
+            }
+            editor.setSelection((sel + delta).coerceIn(0, ed.length))
+        } finally { folding = false }
+        clearUndoStacks()
+        scheduleHighlight()
     }
 
     // ---------- التبويبات ----------
@@ -410,7 +611,7 @@ class EditorActivity : AppCompatActivity() {
     private fun save() {
         val f = current ?: return
         if (!dirty) return
-        try { f.writeText(editor.text.toString()); dirty = false; refreshTabs() } catch (e: Exception) { toast("Save failed: ${e.message}") }
+        try { f.writeText(editor.fullTextOf(0, editor.text.length)); dirty = false; refreshTabs() } catch (e: Exception) { toast("Save failed: ${e.message}") }
     }
 
     private fun showFiles() {
@@ -445,13 +646,17 @@ class EditorActivity : AppCompatActivity() {
     }
 
     private fun highlightNow() {
-        if (current?.extension != "rs") { clearSpans(); return }
+        if (current?.extension != "rs") { clearSpans(); foldMap = emptyMap(); editor.foldStarts = emptySet(); return }
         val text = editor.text.toString()
         val v = version
         hlExec.execute {
             val toks = RustHighlighter.highlight(text)
+            val fm = try { FoldScanner.scan(text) } catch (_: Throwable) { emptyMap() }
             runOnUiThread {
                 if (v != version || isFinishing) return@runOnUiThread
+                foldMap = fm
+                editor.foldStarts = fm.keys
+                editor.invalidate()
                 val e = editor.editableText
                 clearSpans()
                 for (t in toks) if (t.end <= e.length) e.setSpan(HlSpan(t.color), t.start, t.end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
@@ -513,7 +718,7 @@ class EditorActivity : AppCompatActivity() {
     private fun raSync() {
         val f = current ?: return
         val c = ensureRa() ?: return
-        c.sync(f, editor.text.toString())
+        c.sync(f, editor.fullTextOf(0, editor.text.length))
     }
 
     private fun onSettingsChanged() {
@@ -564,6 +769,7 @@ class EditorActivity : AppCompatActivity() {
 
     private fun requestCompletion() {
         val f = current ?: return
+        unfoldAll()
         val c = ensureRa()
         if (c == null) { toast("rust-analyzer is off, paused, or not installed (see Settings)"); return }
         if (!c.ready) { toast("rust-analyzer is starting..."); return }
@@ -689,6 +895,7 @@ class EditorActivity : AppCompatActivity() {
         val q = findInput.text.toString()
         if (q.isEmpty()) return
         // ":123" ينتقل إلى السطر 123
+        if (Regex("^:(\\d+)$").matches(q)) unfoldAll()
         Regex("^:(\\d+)$").find(q)?.let {
             val pos = offsetOf(maxOf(it.groupValues[1].toInt() - 1, 0), 0)
             editor.requestFocus(); editor.setSelection(pos); scrollToOffset(pos); return
@@ -696,6 +903,11 @@ class EditorActivity : AppCompatActivity() {
         val t = editor.text.toString()
         var idx = if (forward) t.indexOf(q, editor.selectionEnd, true) else t.lastIndexOf(q, editor.selectionStart - 1, true)
         if (idx < 0) idx = if (forward) t.indexOf(q, 0, true) else t.lastIndexOf(q, t.length, true)
+        if (idx < 0 && hasFolds()) {
+            // قد يكون في كتلة مطوية: افتح الكل وأعد البحث
+            val full = editor.fullTextOf(0, editor.text.length)
+            if (full.contains(q, true)) { unfoldAll(); findNext(forward); return }
+        }
         if (idx < 0) {
             toast(if (q.all { it.isDigit() }) "Not found as text — tap Go to jump to line $q" else "Not found")
             return
@@ -708,6 +920,7 @@ class EditorActivity : AppCompatActivity() {
     private fun goToLineFromInput() {
         val n = findInput.text.toString().trim().removePrefix(":").toIntOrNull()
         if (n == null || n < 1) { toast("Type a line number first"); return }
+        unfoldAll()
         val total = editor.text.count { it == '\n' } + 1
         val line = minOf(n, total)
         val pos = offsetOf(line - 1, 0)
@@ -718,6 +931,7 @@ class EditorActivity : AppCompatActivity() {
     private fun replaceOne() {
         val q = findInput.text.toString()
         if (q.isEmpty()) return
+        unfoldAll()
         val r = replInput.text.toString()
         val a = editor.selectionStart; val b = editor.selectionEnd
         if (a >= 0 && b - a == q.length && editor.text.substring(a, b).equals(q, true)) {
@@ -730,6 +944,7 @@ class EditorActivity : AppCompatActivity() {
     private fun replaceAll() {
         val q = findInput.text.toString()
         if (q.isEmpty()) return
+        unfoldAll()
         val r = replInput.text.toString()
         val t = editor.text.toString()
         var n = 0; var i = t.indexOf(q, 0, true)
@@ -951,6 +1166,7 @@ class EditorActivity : AppCompatActivity() {
         val f = File(project, d.file ?: return)
         if (!f.exists()) return
         if (f != current) openFile(f)
+        unfoldAll()
         editor.post {
             val s = editor.text.toString()
             var off = 0; var l = 1
