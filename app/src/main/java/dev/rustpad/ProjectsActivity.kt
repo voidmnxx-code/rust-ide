@@ -48,6 +48,9 @@ class ProjectsActivity : AppCompatActivity() {
         bar.addView(flatButton("Crates") {
             startActivity(Intent(this, TerminalActivity::class.java).putExtra("cmd", "rustpad-crates | less"))
         })
+        bar.addView(flatButton("Self-test") {
+            startActivity(Intent(this, TerminalActivity::class.java).putExtra("cmd", "rustpad-selftest"))
+        })
         bar.addView(flatButton("Warm cache") {
             startActivity(Intent(this, TerminalActivity::class.java).putExtra("cmd", "rustpad-warm"))
         })
