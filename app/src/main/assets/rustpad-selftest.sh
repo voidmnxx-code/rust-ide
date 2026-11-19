@@ -48,12 +48,12 @@ if command -v sccache >/dev/null; then
   export SCCACHE_DIR="$HOME/.cache/sccache"
   if out=$(sccache --start-server 2>&1); then
     ok "sccache server"
-    cargo new --quiet sc >/dev/null 2>&1
+    cargo new --lib --quiet sc >/dev/null 2>&1
     ( cd sc && RUSTC_WRAPPER=sccache CARGO_INCREMENTAL=0 cargo build -q 2>&1 | tail -2
       cargo clean -q; RUSTC_WRAPPER=sccache CARGO_INCREMENTAL=0 cargo build -q 2>&1 | tail -2 )
-    h=$(sccache --show-stats 2>/dev/null | grep -i "cache hits" | head -1)
-    echo "      stats: $h"
-    echo "$h" | grep -Eq '[1-9][0-9]*\s*$' && ok "sccache cache hit" || bad "sccache no hits" "keep sccache OFF"
+    h=$(sccache --show-stats 2>/dev/null | grep -iE "cache (hits|misses)")
+    echo "$h" | sed 's/^/      /'
+    echo "$h" | grep -i "hits" | grep -Eq '[1-9][0-9]*\s*$' && ok "sccache cache hit" || bad "sccache no hits" "keep sccache OFF"
     sccache --stop-server >/dev/null 2>&1
   else bad "sccache server" "$(echo "$out" | tail -2)"; fi
 else skip "sccache not installed"; fi
