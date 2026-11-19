@@ -169,7 +169,7 @@ class EditorActivity : AppCompatActivity() {
         root.addView(bar)
 
         findInput = EditText(this).apply {
-            hint = "find  (or :123 = go to line)"; textSize = 13f; isSingleLine = true
+            hint = "find, or a line number + Go"; textSize = 13f; isSingleLine = true
             setTextColor(Colors.TEXT); setHintTextColor(Colors.DIM)
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
             imeOptions = android.view.inputmethod.EditorInfo.IME_ACTION_SEARCH
@@ -184,6 +184,7 @@ class EditorActivity : AppCompatActivity() {
             orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
             addView(findInput, LinearLayout.LayoutParams(dp(190), -2))
             addView(replInput, LinearLayout.LayoutParams(dp(130), -2))
+            addView(flatButton("Go") { goToLineFromInput() })
             addView(flatButton("◀") { findNext(false) })
             addView(flatButton("▶") { findNext(true) })
             addView(flatButton("Replace") { replaceOne() })
@@ -575,10 +576,23 @@ class EditorActivity : AppCompatActivity() {
         val t = editor.text.toString()
         var idx = if (forward) t.indexOf(q, editor.selectionEnd, true) else t.lastIndexOf(q, editor.selectionStart - 1, true)
         if (idx < 0) idx = if (forward) t.indexOf(q, 0, true) else t.lastIndexOf(q, t.length, true)
-        if (idx < 0) { toast("Not found"); return }
+        if (idx < 0) {
+            toast(if (q.all { it.isDigit() }) "Not found as text — tap Go to jump to line $q" else "Not found")
+            return
+        }
         editor.requestFocus()
         editor.setSelection(idx, idx + q.length)
         scrollToOffset(idx)
+    }
+
+    private fun goToLineFromInput() {
+        val n = findInput.text.toString().trim().removePrefix(":").toIntOrNull()
+        if (n == null || n < 1) { toast("Type a line number first"); return }
+        val total = editor.text.count { it == '\n' } + 1
+        val line = minOf(n, total)
+        val pos = offsetOf(line - 1, 0)
+        editor.requestFocus(); editor.setSelection(pos); scrollToOffset(pos)
+        if (n > total) toast("File has only $total lines")
     }
 
     private fun replaceOne() {
