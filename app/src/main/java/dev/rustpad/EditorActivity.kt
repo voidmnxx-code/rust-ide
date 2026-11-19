@@ -182,7 +182,7 @@ class EditorActivity : AppCompatActivity() {
         val t = editor.text
         var line = 1; var lineStart = 0
         for (i in 0 until minOf(pos, t.length)) if (t[i] == '\n') { line++; lineStart = i + 1 }
-        val extra = listOf(raState, buildState).filter { it.isNotEmpty() }.joinToString("  |  ")
+        val extra = listOf(if (TreeSitter.available) "hl:TS" else "hl:regex", raState, buildState).filter { it.isNotEmpty() }.joinToString("  |  ")
         status.text = "Ln $line, Col ${pos - lineStart + 1}${if (dirty) "  •  modified" else ""}" +
             if (extra.isNotEmpty()) "   |   $extra" else ""
     }
@@ -251,7 +251,7 @@ class EditorActivity : AppCompatActivity() {
         val text = editor.text.toString()
         val v = version
         hlExec.execute {
-            val toks = RustHighlighter.tokens(text)
+            val toks = RustHighlighter.highlight(text)
             runOnUiThread {
                 if (v != version || isFinishing) return@runOnUiThread
                 val e = editor.editableText

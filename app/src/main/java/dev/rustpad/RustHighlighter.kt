@@ -29,6 +29,32 @@ object RustHighlighter {
     private val type = Regex("\\b[A-Z][A-Za-z0-9_]*\\b")
     private val number = Regex("\\b\\d[\\d_]*(?:\\.\\d+)?(?:[iu](?:8|16|32|64|128|size)|f32|f64)?\\b")
 
+    private val cFunc = Color.parseColor("#FFC66D")
+
+    /** Tree-sitter إن توفّر (تحليل نحوي حقيقي)، وإلا regex. */
+    fun highlight(src: String): List<Tok> {
+        if (TreeSitter.available) {
+            try {
+                val a = TreeSitter.nativeHighlight(src)
+                if (a != null) {
+                    val out = ArrayList<Tok>(a.size / 3)
+                    var i = 0
+                    while (i + 2 < a.size) {
+                        val c = when (a[i + 2]) {
+                            1 -> cKeyword; 2 -> cString; 3 -> cComment; 4 -> cNumber; 5 -> cType
+                            6 -> cMacro; 7 -> cAttr; 8 -> cFunc; else -> cAttr
+                        }
+                        if (a[i] in 0 until a[i + 1] && a[i + 1] <= src.length) out.add(Tok(a[i], a[i + 1], c))
+                        i += 3
+                    }
+                    return out
+                }
+            } catch (_: Throwable) {
+            }
+        }
+        return tokens(src)
+    }
+
     fun tokens(src: String): List<Tok> {
         val out = ArrayList<Tok>()
         val mask = BooleanArray(src.length)

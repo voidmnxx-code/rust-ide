@@ -47,6 +47,17 @@ android {
     }
     kotlinOptions { jvmTarget = "17" }
 
+    // مكتبة Tree-sitter الأصلية: تُبنى فقط إن جُلبت المصادر (tools/fetch_treesitter.sh)؛ وإلا يبقى ملوّن regex.
+    (project.findProperty("ndkVersion") as String?)?.let { ndkVersion = it }
+    if (file("src/main/cpp/ts/runtime/lib/src/lib.c").exists()) {
+        externalNativeBuild {
+            cmake {
+                path = file("src/main/cpp/CMakeLists.txt")
+                (project.findProperty("cmakeVersion") as String?)?.let { version = it }
+            }
+        }
+    }
+
     lint {
         abortOnError = false
         checkReleaseBuilds = false

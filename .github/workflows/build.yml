@@ -44,8 +44,15 @@ jobs:
           "$BT/d8" --lib "$ANDROID_JAR" --min-api 24 --output app/src/main/assets/shell $(find shellbuild/classes -name '*.class')
           ls -l app/src/main/assets/shell
 
+      - name: Fetch tree-sitter sources
+        run: tools/fetch_treesitter.sh
+
       - name: Build debug APK
-        run: gradle :app:assembleDebug --no-daemon --stacktrace
+        run: |
+          NDK=$(ls "$ANDROID_HOME/ndk" | sort -V | tail -1)
+          CMAKE=$(ls "$ANDROID_HOME/cmake" | sort -V | tail -1)
+          echo "NDK=$NDK CMAKE=$CMAKE"
+          gradle :app:assembleDebug --no-daemon --stacktrace -PndkVersion="$NDK" -PcmakeVersion="$CMAKE"
 
       - name: Publish APK as pre-release "nightly"
         env:
