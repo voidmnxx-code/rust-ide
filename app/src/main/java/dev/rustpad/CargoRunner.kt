@@ -13,11 +13,12 @@ class CargoRunner(private val env: Env) {
     fun run(
         dir: File,
         args: List<String>,
+        jobs: Int,
+        extraEnv: Map<String, String>,
         onText: (String) -> Unit,
         onDiag: (Diag) -> Unit,
         onProcess: (Process) -> Unit,
     ): Int {
-        val jobs = maxOf(2, Runtime.getRuntime().availableProcessors() / 2)
         val cmd = listOf(File(env.prefix, "bin/cargo").path) + args +
             listOf("--message-format=json", "-j", jobs.toString())
         val pb = ProcessBuilder(cmd).directory(dir).redirectErrorStream(true)
@@ -25,6 +26,7 @@ class CargoRunner(private val env: Env) {
             clear()
             putAll(env.environment())
             put("CARGO_TERM_COLOR", "never")
+            putAll(extraEnv)
         }
         val p = pb.start()
         onProcess(p)

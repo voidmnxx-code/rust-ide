@@ -44,6 +44,17 @@ class EditorActivity : AppCompatActivity() {
     private lateinit var diagList: LinearLayout
     private lateinit var output: TextView
 
+    private lateinit var settings: Settings
+    private lateinit var raList: LinearLayout
+    private var ra: RaClient? = null
+    private val raDiags = HashMap<String, List<Diag>>()
+    private var raState = ""
+    private var buildState = ""
+    private var raSyncTask: Runnable? = null
+    private var autoTask: Runnable? = null
+    private var autoRunning = false
+    private var completionPopup: android.widget.ListPopupWindow? = null
+
     private var current: File? = null
     private var dirty = false
     private var loading = false
@@ -57,6 +68,7 @@ class EditorActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         env = Env(this)
+        settings = Settings(this)
         CrashLogger.install(env)
         project = File(intent.getStringExtra("project") ?: run { finish(); return })
         buildUi()
@@ -65,12 +77,14 @@ class EditorActivity : AppCompatActivity() {
     }
 
     override fun onPause() {
+        completionPopup?.dismiss()
         save()
         super.onPause()
     }
 
     override fun onDestroy() {
         proc?.destroy()
+        ra?.stop()
         hlExec.shutdown()
         super.onDestroy()
     }
@@ -101,6 +115,7 @@ class EditorActivity : AppCompatActivity() {
             save()
             startActivity(Intent(this, TerminalActivity::class.java).putExtra("cwd", project.path))
         })
+        btns.addView(flatButton("Settings") { SettingsDialog.show(this) { onSettingsChanged() } })
         bar.addView(HorizontalScrollView(this).apply { addView(btns); isHorizontalScrollBarEnabled = false },
             LinearLayout.LayoutParams(0, -2, 2f))
         root.addView(bar)
@@ -124,6 +139,7 @@ class EditorActivity : AppCompatActivity() {
                 if (!inserting && before == 0 && count == 1 && s[start] == '\n') autoIndent(s, start)
                 scheduleHighlight()
                 updateStatus()
+                onEdited(s, start, before, count)
             }
             override fun afterTextChanged(e: Editable?) {}
         })
@@ -139,13 +155,15 @@ class EditorActivity : AppCompatActivity() {
             typeface = Typeface.MONOSPACE; textSize = 11f; setTextColor(Colors.TEXT)
             setTextIsSelectable(true)
         }
-        pbox.addView(diagList); pbox.addView(output)
+        raList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        pbox.addView(raList); pbox.addView(diagList); pbox.addView(output)
         panel.addView(pbox)
         root.addView(panel, LinearLayout.LayoutParams(-1, 0, 0.8f))
 
         // صف مفاتيح الرموز
         val keys = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         keys.addView(flatButton("Tab") { insert("    ") })
+        keys.addView(flatButton("Complete") { requestCompletion() })
         for (k in listOf("{", "}", "(", ")", "[", "]", ";", ":", "<", ">", "&", "'", "\"", "=", "!", "_", "|", "*", "-", "+", "/", ",", ".", "?", "#")) {
             keys.addView(flatButton(k) { insert(k) })
         }
@@ -164,7 +182,9 @@ class EditorActivity : AppCompatActivity() {
         val t = editor.text
         var line = 1; var lineStart = 0
         for (i in 0 until minOf(pos, t.length)) if (t[i] == '\n') { line++; lineStart = i + 1 }
-        status.text = "Ln $line, Col ${pos - lineStart + 1}${if (dirty) "  •  modified" else ""}"
+        val extra = listOf(raState, buildState).filter { it.isNotEmpty() }.joinToString("  |  ")
+        status.text = "Ln $line, Col ${pos - lineStart + 1}${if (dirty) "  •  modified" else ""}" +
+            if (extra.isNotEmpty()) "   |   $extra" else ""
     }
 
     private fun insert(s: String) {
@@ -185,6 +205,8 @@ class EditorActivity : AppCompatActivity() {
         title.text = "${project.name}/${f.relativeTo(project).path}"
         highlightNow()
         updateStatus()
+        refreshRaList()
+        handler.postDelayed({ raSync() }, 200)
     }
 
     private fun save() {
@@ -263,17 +285,172 @@ class EditorActivity : AppCompatActivity() {
     }
 
     // ---------- cargo ----------
-    private fun runCargo(sub: String) {
-        if (proc != null) { toast("Already running — tap Stop"); return }
-        if (!env.isInstalled("base")) { toast("Toolchain not installed (Terminal → Bootstrap)"); return }
+    // ---------- rust-analyzer (كسول) ----------
+    private fun raWanted() = settings.raEnabled && current?.extension == "rs" &&
+        File(env.prefix, "bin/rust-analyzer").exists()
+
+    private fun ensureRa(): RaClient? {
+        if (!raWanted()) return null
+        ra?.let { if (it.alive) return it }
+        if (!BuildTuner.canBackgroundWork(this)) { raState = "RA: paused (hot/low battery)"; return null }
+        val c = RaClient(env, project,
+            onDiagnostics = { rel, list -> runOnUiThread { raDiags[rel] = list; refreshRaList() } },
+            onState = { st -> runOnUiThread { raState = st; updateStatus() } })
+        return try {
+            if (c.start()) { ra = c; scheduleIdleCheck(); c } else null
+        } catch (t: Throwable) { raState = "RA: failed (${t.message})"; null }
+    }
+
+    private fun scheduleIdleCheck() {
+        handler.postDelayed({
+            val c = ra ?: return@postDelayed
+            val idle = android.os.SystemClock.elapsedRealtime() - c.lastUsed > 5 * 60_000
+            if (idle || !BuildTuner.canBackgroundWork(this)) {
+                c.stop(); ra = null; raState = "RA: stopped (idle)"; updateStatus()
+            } else scheduleIdleCheck()
+        }, 60_000)
+    }
+
+    private fun raSync() {
+        val f = current ?: return
+        val c = ensureRa() ?: return
+        c.sync(f, editor.text.toString())
+    }
+
+    private fun onSettingsChanged() {
+        if (!settings.raEnabled) { ra?.stop(); ra = null; raDiags.clear(); raState = ""; refreshRaList() }
+        else raSync()
+        scheduleAutoCheck()
+        updateStatus()
+    }
+
+    private fun onEdited(s: CharSequence, start: Int, before: Int, count: Int) {
+        completionPopup?.dismiss()
+        raSyncTask?.let { handler.removeCallbacks(it) }
+        val r = Runnable { raSync() }
+        raSyncTask = r
+        handler.postDelayed(r, 300)
+        scheduleAutoCheck()
+        if (settings.raEnabled && before == 0 && count == 1) {
+            val ch = s[start]
+            if (ch == '.' || (ch == ':' && start > 0 && s[start - 1] == ':')) {
+                handler.postDelayed({ requestCompletion() }, 60)
+            }
+        }
+    }
+
+    private fun scheduleAutoCheck() {
+        autoTask?.let { handler.removeCallbacks(it) }
+        if (!settings.autoCheck || current?.extension != "rs") return
+        val r = Runnable {
+            if (proc == null && BuildTuner.canBackgroundWork(this)) runCargo("check", silent = true)
+        }
+        autoTask = r
+        handler.postDelayed(r, 4000)
+    }
+
+    private fun lineCol(pos: Int): Pair<Int, Int> {
+        val t = editor.text
+        var line = 0; var ls = 0
+        for (i in 0 until minOf(pos, t.length)) if (t[i] == '\n') { line++; ls = i + 1 }
+        return line to (pos - ls)
+    }
+
+    private fun offsetOf(line: Int, col: Int): Int {
+        val t = editor.text
+        var l = 0; var i = 0
+        while (l < line && i < t.length) { if (t[i] == '\n') l++; i++ }
+        return minOf(i + col, t.length)
+    }
+
+    private fun requestCompletion() {
+        val f = current ?: return
+        val c = ensureRa()
+        if (c == null) { toast("rust-analyzer is off, paused, or not installed (see Settings)"); return }
+        if (!c.ready) { toast("rust-analyzer is starting..."); return }
+        c.sync(f, editor.text.toString())
+        val pos = editor.selectionStart.coerceAtLeast(0)
+        val (line, col) = lineCol(pos)
+        c.completion(f, line, col) { items -> runOnUiThread { showCompletions(items, pos) } }
+    }
+
+    private fun showCompletions(items: List<CItem>, pos: Int) {
+        completionPopup?.dismiss()
+        if (items.isEmpty() || isFinishing) return
+        val lay = editor.layout ?: return
+        val cursorY = lay.getLineBottom(lay.getLineForOffset(pos.coerceAtMost(editor.text.length))) +
+            editor.paddingTop - editorScroll.scrollY
+        val h = (editorScroll.height * 0.4).toInt()
+        val labels = items.map { if (it.detail != null) "${it.label}   ${it.detail}" else it.label }
+        val popup = android.widget.ListPopupWindow(this)
+        popup.anchorView = editorScroll
+        popup.setAdapter(object : android.widget.ArrayAdapter<String>(this, android.R.layout.simple_list_item_1, labels) {
+            override fun getView(p: Int, v: View?, parent: android.view.ViewGroup) =
+                (super.getView(p, v, parent) as TextView).apply {
+                    setTextColor(Colors.TEXT); textSize = 13f; maxLines = 1; typeface = Typeface.MONOSPACE
+                }
+        })
+        popup.setBackgroundDrawable(android.graphics.drawable.ColorDrawable(Colors.PANEL))
+        popup.width = (editorScroll.width * 0.85).toInt()
+        popup.height = h
+        popup.isModal = false
+        popup.inputMethodMode = android.widget.ListPopupWindow.INPUT_METHOD_NOT_NEEDED
+        // إن كان المؤشر في النصف السفلي نعرض القائمة أعلى المحرر، وإلا أسفله
+        popup.verticalOffset = if (cursorY > editorScroll.height / 2) -editorScroll.height else -h
+        popup.setOnItemClickListener { _, _, i, _ -> applyCompletion(items[i], pos); popup.dismiss() }
+        completionPopup = popup
+        popup.show()
+    }
+
+    private fun applyCompletion(item: CItem, pos: Int) {
+        val e = editor.editableText
+        val (s, en) = if (item.range != null) {
+            offsetOf(item.range[0], item.range[1]) to offsetOf(item.range[2], item.range[3])
+        } else {
+            var st = pos.coerceAtMost(e.length)
+            while (st > 0 && (e[st - 1].isLetterOrDigit() || e[st - 1] == '_')) st--
+            st to pos.coerceAtMost(e.length)
+        }
+        e.replace(minOf(s, en), maxOf(s, en), item.newText)
+    }
+
+    private fun refreshRaList() {
+        raList.removeAllViews()
+        val rel = current?.relativeTo(project)?.path
+        val list = (if (rel != null) raDiags[rel] else null).orEmpty()
+        for (d in list.take(30)) raList.addView(TextView(this).apply {
+            text = "ra ${d.level}: ${d.message}  ${d.line}:${d.col}"
+            textSize = 12f
+            setTextColor(if (d.level == "error") Colors.ERROR else Colors.WARN)
+            setPadding(0, dp(3), 0, dp(3))
+            setOnClickListener { goTo(d) }
+        })
+        val e = list.count { it.level == "error" }; val w = list.size - e
+        if (ra != null && ra!!.ready) { raState = "RA: ready ($e err, $w warn)" }
+        updateStatus()
+    }
+
+    private fun buildEnv(): Map<String, String> =
+        if (settings.useLld) mapOf("RUSTFLAGS" to "-C link-arg=-fuse-ld=lld") else emptyMap()
+
+    private fun runCargo(sub: String, silent: Boolean = false) {
+        if (proc != null) {
+            if (autoRunning && !silent) { proc?.destroy(); handler.postDelayed({ runCargo(sub) }, 600) }
+            else if (!silent) toast("Already running — tap Stop")
+            return
+        }
+        if (!env.isInstalled("base")) { if (!silent) toast("Toolchain not installed (Terminal → Bootstrap)"); return }
         save()
+        autoRunning = silent
         output.text = ""; diagList.removeAllViews()
-        panel.visibility = View.VISIBLE
-        KeepAliveService.start(this, "cargo $sub")
+        if (silent) { buildState = "checking..."; updateStatus() }
+        else { panel.visibility = View.VISIBLE; KeepAliveService.start(this, "cargo $sub") }
+        val jobs = BuildTuner.jobs(this)
+        val extraEnv = buildEnv()
         var errors = 0; var warnings = 0
         thread(name = "cargo") {
             val code = try {
-                CargoRunner(env).run(project, listOf(sub),
+                CargoRunner(env).run(project, listOf(sub), jobs, extraEnv,
                     onText = { appendOut(it) },
                     onDiag = { d ->
                         if (d.level == "error") errors++ else warnings++
@@ -282,8 +459,10 @@ class EditorActivity : AppCompatActivity() {
                     onProcess = { proc = it })
             } catch (t: Throwable) { appendOut("error: $t\n"); -1 }
             proc = null
-            KeepAliveService.stop(this)
-            appendOut("[cargo $sub exited with $code — $errors errors, $warnings warnings]\n")
+            autoRunning = false
+            if (!silent) KeepAliveService.stop(this)
+            appendOut("[cargo $sub exited with $code — $errors errors, $warnings warnings, -j$jobs]\n")
+            runOnUiThread { buildState = "$sub: $errors err, $warnings warn"; updateStatus() }
         }
     }
 
@@ -305,7 +484,10 @@ class EditorActivity : AppCompatActivity() {
                 val pb = ProcessBuilder(
                     File(env.prefix, "bin/bash").path, File(env.prefix, "bin/rustpad-export").path, project.path
                 ).directory(project).redirectErrorStream(true)
-                pb.environment().apply { clear(); putAll(env.environment()); put("CARGO_TERM_COLOR", "never") }
+                pb.environment().apply {
+                    clear(); putAll(env.environment()); put("CARGO_TERM_COLOR", "never")
+                    put("RUSTPAD_JOBS", BuildTuner.jobs(this@EditorActivity).toString()); putAll(buildEnv())
+                }
                 val p = pb.start()
                 proc = p
                 p.inputStream.bufferedReader().useLines { lines ->

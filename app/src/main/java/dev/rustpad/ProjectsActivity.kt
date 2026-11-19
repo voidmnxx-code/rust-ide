@@ -42,6 +42,7 @@ class ProjectsActivity : AppCompatActivity() {
         bar.addView(flatButton("Terminal") {
             startActivity(Intent(this, TerminalActivity::class.java))
         })
+        bar.addView(flatButton("Settings") { SettingsDialog.show(this) {} })
         root.addView(bar)
 
         banner = TextView(this).apply {

@@ -14,7 +14,7 @@ ANDROID_JAR="$PREFIX/share/android/android.jar"
 [ -f "$ANDROID_JAR" ] || { echo "ERROR: android.jar missing (apk-tools bootstrap stage)"; exit 3; }
 
 echo "== [1/4] cargo build --release"
-JOBS=$(( $(nproc) / 2 )); [ "$JOBS" -ge 2 ] || JOBS=2
+JOBS="${RUSTPAD_JOBS:-$(( $(nproc) / 2 ))}"; [ "$JOBS" -ge 1 ] || JOBS=1
 cargo build --release --lib -j "$JOBS"
 SO=$(ls target/release/lib*.so 2>/dev/null | head -1 || true)
 [ -n "$SO" ] || { echo "ERROR: no .so produced. Cargo.toml needs [lib] crate-type = [\"cdylib\"]"; exit 4; }
