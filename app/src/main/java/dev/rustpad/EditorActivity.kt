@@ -75,6 +75,15 @@ class CodeEditText(ctx: Context) : EditText(ctx) {
     }
 }
 
+class Edit(var start: Int, var removed: String, var added: String)
+
+class Tab(val file: File) {
+    val undo = ArrayList<Edit>()
+    val redo = ArrayList<Edit>()
+    var sel = 0
+    var scrollY = 0
+}
+
 class EditorActivity : AppCompatActivity() {
     private lateinit var env: Env
     private lateinit var project: File
@@ -89,6 +98,11 @@ class EditorActivity : AppCompatActivity() {
     private lateinit var settings: Settings
     private lateinit var raList: LinearLayout
     private lateinit var findBar: HorizontalScrollView
+    private lateinit var tabBar: LinearLayout
+    private val tabs = ArrayList<Tab>()
+    private var tab: Tab? = null
+    private var undoing = false
+    private var pendingRemoved = ""
     private lateinit var findInput: EditText
     private lateinit var replInput: EditText
     private val cargoDiags = ArrayList<Diag>()
@@ -168,6 +182,11 @@ class EditorActivity : AppCompatActivity() {
             LinearLayout.LayoutParams(0, -2, 2f))
         root.addView(bar)
 
+        tabBar = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        root.addView(HorizontalScrollView(this).apply {
+            addView(tabBar); isHorizontalScrollBarEnabled = false; setBackgroundColor(Colors.PANEL)
+        })
+
         findInput = EditText(this).apply {
             hint = "find, or a line number + Go"; textSize = 13f; isSingleLine = true
             setTextColor(Colors.TEXT); setHintTextColor(Colors.DIM)
@@ -209,10 +228,14 @@ class EditorActivity : AppCompatActivity() {
             onCursor = { updateStatus() }
         }
         editor.addTextChangedListener(object : TextWatcher {
-            override fun beforeTextChanged(s: CharSequence?, st: Int, c: Int, a: Int) {}
+            override fun beforeTextChanged(s: CharSequence?, st: Int, c: Int, a: Int) {
+                pendingRemoved = if (!loading && !undoing && s != null && c > 0) s.substring(st, st + c) else ""
+            }
             override fun onTextChanged(s: CharSequence, start: Int, before: Int, count: Int) {
                 if (loading) return
-                dirty = true; version++
+                if (!undoing) recordEdit(start, pendingRemoved, s.substring(start, start + count))
+                if (!dirty) { dirty = true; refreshTabs() }
+                version++
                 if (!inserting && before == 0 && count == 1 && s[start] == '\n') autoIndent(s, start)
                 scheduleHighlight()
                 updateStatus()
@@ -231,6 +254,15 @@ class EditorActivity : AppCompatActivity() {
         output = TextView(this).apply {
             typeface = Typeface.MONOSPACE; textSize = 11f; setTextColor(Colors.TEXT)
             setTextIsSelectable(true)
+            var downX = 0f; var downY = 0f
+            setOnTouchListener { v, ev ->
+                when (ev.action) {
+                    android.view.MotionEvent.ACTION_DOWN -> { downX = ev.x; downY = ev.y }
+                    android.view.MotionEvent.ACTION_UP -> if (Math.abs(ev.x - downX) < dp(8) && Math.abs(ev.y - downY) < dp(8) &&
+                        ev.eventTime - ev.downTime < 300) jumpFromOutput(ev.x, ev.y)
+                }
+                false
+            }
         }
         raList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         pbox.addView(raList); pbox.addView(diagList); pbox.addView(output)
@@ -239,6 +271,8 @@ class EditorActivity : AppCompatActivity() {
 
         // صف مفاتيح الرموز
         val keys = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        keys.addView(flatButton("Undo") { undo() })
+        keys.addView(flatButton("Redo") { redo() })
         keys.addView(flatButton("Tab") { insert("    ") })
         keys.addView(flatButton("Complete") { requestCompletion() })
         for (k in listOf("{", "}", "(", ")", "[", "]", ";", ":", "<", ">", "&", "'", "\"", "=", "!", "_", "|", "*", "-", "+", "/", ",", ".", "?", "#")) {
@@ -271,14 +305,100 @@ class EditorActivity : AppCompatActivity() {
         e.replace(a, b, s)
     }
 
+    // ---------- تراجع / إعادة ----------
+    private fun recordEdit(start: Int, removed: String, added: String) {
+        val t = tab ?: return
+        t.redo.clear()
+        val last = t.undo.lastOrNull()
+        if (last != null && removed.isEmpty() && last.removed.isEmpty() && '\n' !in added &&
+            start == last.start + last.added.length && last.added.length < 40 && last.added.isNotEmpty() && '\n' !in last.added) {
+            last.added += added; return
+        }
+        if (last != null && added.isEmpty() && last.added.isEmpty() && removed.length == 1 &&
+            start + 1 == last.start && last.removed.length < 40) {
+            last.start = start; last.removed = removed + last.removed; return
+        }
+        t.undo.add(Edit(start, removed, added))
+        if (t.undo.size > 500) t.undo.removeAt(0)
+    }
+
+    private fun undo() {
+        val t = tab ?: return
+        val e = t.undo.removeLastOrNull() ?: run { toast("Nothing to undo"); return }
+        applyEdit(e.start, e.added.length, e.removed)
+        t.redo.add(e)
+    }
+
+    private fun redo() {
+        val t = tab ?: return
+        val e = t.redo.removeLastOrNull() ?: run { toast("Nothing to redo"); return }
+        applyEdit(e.start, e.removed.length, e.added)
+        t.undo.add(e)
+    }
+
+    private fun applyEdit(start: Int, len: Int, text: String) {
+        val ed = editor.editableText
+        val s = start.coerceIn(0, ed.length); val en = (start + len).coerceIn(s, ed.length)
+        undoing = true
+        try { ed.replace(s, en, text); editor.setSelection((s + text.length).coerceAtMost(ed.length)) }
+        finally { undoing = false }
+    }
+
+    // ---------- التبويبات ----------
+    private fun refreshTabs() {
+        tabBar.removeAllViews()
+        for (t in tabs.toList()) {
+            val active = t === tab
+            val box = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+                setBackgroundColor(if (active) Colors.BG else Colors.PANEL)
+                setPadding(dp(10), dp(6), dp(4), dp(6))
+            }
+            box.addView(TextView(this).apply {
+                text = t.file.name + if (active && dirty) " •" else ""
+                textSize = 12f; maxLines = 1
+                setTextColor(if (active) Colors.TEXT else Colors.DIM)
+                setOnClickListener { if (!active) openFile(t.file) }
+            })
+            if (tabs.size > 1) box.addView(TextView(this).apply {
+                text = "  ✕ "; textSize = 12f; setTextColor(Colors.DIM)
+                setOnClickListener { closeTab(t) }
+            })
+            tabBar.addView(box)
+        }
+        tabBar.visibility = if (tabs.size > 1) View.VISIBLE else View.GONE
+    }
+
+    private fun closeTab(t: Tab) {
+        val i = tabs.indexOf(t)
+        if (i < 0 || tabs.size <= 1) return
+        if (t === tab) {
+            save()
+            tabs.removeAt(i)
+            tab = null
+            openFile(tabs[minOf(i, tabs.size - 1)].file)
+        } else {
+            tabs.removeAt(i); refreshTabs()
+        }
+    }
+
     // ---------- الملفات ----------
-    private fun openFile(f: File) {
+    private fun openFile(f: File, reload: Boolean = false) {
         save()
+        tab?.let { it.sel = editor.selectionStart.coerceAtLeast(0); it.scrollY = editorScroll.scrollY }
+        val t = tabs.firstOrNull { it.file == f } ?: Tab(f).also { tabs.add(it) }
+        if (reload) { t.undo.clear(); t.redo.clear() }
+        tab = t
         current = f
         loading = true
         editor.setText(if (f.exists()) f.readText() else "")
         loading = false
         dirty = false; version++
+        editor.post {
+            editor.setSelection(t.sel.coerceIn(0, editor.text.length))
+            editorScroll.scrollTo(0, t.scrollY)
+        }
+        refreshTabs()
         title.text = "${project.name}/${f.relativeTo(project).path}"
         highlightNow()
         updateStatus()
@@ -290,7 +410,7 @@ class EditorActivity : AppCompatActivity() {
     private fun save() {
         val f = current ?: return
         if (!dirty) return
-        try { f.writeText(editor.text.toString()); dirty = false } catch (e: Exception) { toast("Save failed: ${e.message}") }
+        try { f.writeText(editor.text.toString()); dirty = false; refreshTabs() } catch (e: Exception) { toast("Save failed: ${e.message}") }
     }
 
     private fun showFiles() {
@@ -664,7 +784,7 @@ class EditorActivity : AppCompatActivity() {
             proc = null
             KeepAliveService.stop(this)
             appendOut("[git exited with $code]\n")
-            if (code == 0 && reloadAfter) runOnUiThread { current?.let { openFile(it) } }
+            if (code == 0 && reloadAfter) runOnUiThread { current?.let { openFile(it, reload = true) } }
         }
     }
 
@@ -807,6 +927,23 @@ class EditorActivity : AppCompatActivity() {
             setPadding(0, dp(4), 0, dp(4))
             if (d.file != null) setOnClickListener { goTo(d) }
         })
+    }
+
+    /** نقرة على سطر في الإخراج يحوي مثل src/main.rs:12:5 تفتح الملف عند ذلك السطر. */
+    private fun jumpFromOutput(x: Float, y: Float) {
+        val txt = output.text ?: return
+        if (txt.isEmpty()) return
+        val off = output.getOffsetForPosition(x, y).coerceIn(0, txt.length - 1)
+        val ls = txt.lastIndexOf('\n', off).let { if (it < 0) 0 else it + 1 }
+        val le = txt.indexOf('\n', off).let { if (it < 0) txt.length else it }
+        val line = txt.substring(ls, le)
+        val m = Regex("([\\w./-]+\\.(?:rs|toml)):(\\d+)(?::(\\d+))?").find(line) ?: return
+        val path = m.groupValues[1].removePrefix("./")
+        var f = File(project, path)
+        if (!f.exists()) f = File(path)
+        if (!f.exists() || !f.canonicalPath.startsWith(project.canonicalPath)) return
+        val rel = if (f.isAbsolute) f.relativeTo(project).path else path
+        goTo(Diag("note", "", rel, m.groupValues[2].toInt(), m.groupValues[3].toIntOrNull() ?: 1))
     }
 
     private fun goTo(d: Diag) {
