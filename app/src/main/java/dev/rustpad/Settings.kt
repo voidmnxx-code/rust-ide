@@ -36,6 +36,11 @@ class Settings(private val ctx: Context) {
         get() = sp.getBoolean("sccache", false)
         set(v) = sp.edit().putBoolean("sccache", v).apply()
 
+    /** نسخ احتياطي تلقائي عند مغادرة المحرر إن تغيّر المشروع (مرة كل 5 دقائق كحد أقصى). */
+    var autoBackup: Boolean
+        get() = sp.getBoolean("autobackup", true)
+        set(v) = sp.edit().putBoolean("autobackup", v).apply()
+
     var useLld: Boolean
         get() = sp.getBoolean("lld", false)
         set(v) = sp.edit().putBoolean("lld", v).apply()
@@ -50,14 +55,15 @@ object SettingsDialog {
             "Use lld linker (experimental)",
             "Offline crates (vendored, no internet)",
             "Use sccache (run rustpad-warm first)",
+            "Auto backup projects (zip, last 5)",
         )
-        val checked = booleanArrayOf(s.raEnabled, s.autoCheck, s.useLld, s.offlineCrates, s.sccache)
+        val checked = booleanArrayOf(s.raEnabled, s.autoCheck, s.useLld, s.offlineCrates, s.sccache, s.autoBackup)
         AlertDialog.Builder(a)
             .setTitle("Settings  (%.1f GB RAM)".format(s.ramGb))
             .setMultiChoiceItems(labels, checked) { _, i, c -> checked[i] = c }
             .setPositiveButton("Save") { _, _ ->
                 s.raEnabled = checked[0]; s.autoCheck = checked[1]; s.useLld = checked[2]
-                s.offlineCrates = checked[3]; s.sccache = checked[4]
+                s.offlineCrates = checked[3]; s.sccache = checked[4]; s.autoBackup = checked[5]
                 onChanged()
             }
             .setNeutralButton("Keep-alive guide") { _, _ -> VendorGuide.show(a) }

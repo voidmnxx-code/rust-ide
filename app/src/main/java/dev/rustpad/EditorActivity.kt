@@ -245,6 +245,33 @@ class EditorActivity : AppCompatActivity() {
         super.onPause()
     }
 
+    private var lastBackup = 0L
+
+    override fun onStop() {
+        super.onStop()
+        if (!settings.autoBackup) return
+        val now = android.os.SystemClock.elapsedRealtime()
+        if (lastBackup != 0L && now - lastBackup < 5 * 60_000) return
+        lastBackup = now
+        val ext = PermissionManager(this).hasStorageAccess()
+        thread(name = "backup") {
+            try {
+                val bm = BackupManager(env)
+                if (bm.needsBackup(project)) bm.backup(project, ext)
+            } catch (_: Throwable) { }
+        }
+    }
+
+    /** ضغط ذاكرة: rust-analyzer أثقل عملية، نوقفه أولاً. */
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        if (level >= android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW && ra != null) {
+            ra?.stop(); ra = null
+            raState = "RA: stopped (low memory)"
+            updateStatus()
+        }
+    }
+
     override fun onDestroy() {
         proc?.destroy()
         ra?.stop()
@@ -870,6 +897,9 @@ class EditorActivity : AppCompatActivity() {
             autoRunning = false
             if (!silent) KeepAliveService.stop(this)
             appendOut("[cargo $sub exited with $code — $errors errors, $warnings warnings, -j$jobs]\n")
+            if (code == 137 || code == -9 || code == 143) {
+                appendOut("!! The build was killed (probably out of memory). Try: Settings -> turn off rust-analyzer and auto check, close other apps, and rebuild.\n")
+            }
             runOnUiThread { buildState = "$sub: $errors err, $warnings warn"; updateStatus() }
         }
     }

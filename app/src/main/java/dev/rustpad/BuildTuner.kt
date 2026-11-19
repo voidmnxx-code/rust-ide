@@ -21,6 +21,11 @@ object BuildTuner {
         val t = thermal(ctx)
         if (t >= PowerManager.THERMAL_STATUS_SEVERE) return 1
         if (t >= PowerManager.THERMAL_STATUS_MODERATE) j = maxOf(1, j / 2)
+        // ذاكرة متاحة قليلة: كل خيط rustc قد يحتاج ~0.7GB
+        val mi = android.app.ActivityManager.MemoryInfo()
+        ctx.getSystemService(android.app.ActivityManager::class.java).getMemoryInfo(mi)
+        val availGb = mi.availMem / (1024.0 * 1024 * 1024)
+        j = minOf(j, maxOf(1, (availGb / 0.7).toInt()))
         val (level, charging) = battery(ctx)
         if (!charging && level in 0..15) return 1
         if (!charging && level in 0..29) j = maxOf(1, j / 2)

@@ -51,6 +51,8 @@ class ProjectsActivity : AppCompatActivity() {
         bar.addView(flatButton("Self-test") {
             startActivity(Intent(this, TerminalActivity::class.java).putExtra("cmd", "rustpad-selftest"))
         })
+        bar.addView(flatButton("Backup") { backupAll() })
+        bar.addView(flatButton("Restore") { restoreDialog() })
         bar.addView(flatButton("Warm cache") {
             startActivity(Intent(this, TerminalActivity::class.java).putExtra("cmd", "rustpad-warm"))
         })
@@ -87,6 +89,39 @@ class ProjectsActivity : AppCompatActivity() {
                 }
         }
         if (projects.isEmpty()) banner.append("\nNo projects yet. Tap [+ New project].")
+    }
+
+    private fun backupAll() {
+        val perm = PermissionManager(this)
+        val ext = perm.hasStorageAccess()
+        val bm = BackupManager(env)
+        Thread {
+            val res = pm.list().joinToString("\n") { "${it.name}: ${bm.backup(it, ext)}" }
+            runOnUiThread {
+                AlertDialog.Builder(this).setTitle("Backup")
+                    .setMessage((if (res.isEmpty()) "No projects." else res) +
+                        if (ext) "\n\nShared copy: ${bm.externalRoot.path}" else "\n\nStorage access is off: only the internal copy was made (lost if the app is uninstalled). Grant it from Terminal -> Permissions.")
+                    .setPositiveButton("OK", null).show()
+            }
+        }.start()
+    }
+
+    private fun restoreDialog() {
+        val bm = BackupManager(env)
+        val list = bm.available()
+        if (list.isEmpty()) {
+            Toast.makeText(this, "No backups found", Toast.LENGTH_LONG).show(); return
+        }
+        val names = list.map { "${it.project}  (${it.file.name.removeSuffix(".zip")})" }.toTypedArray()
+        AlertDialog.Builder(this).setTitle("Restore a project").setItems(names) { _, i ->
+            Thread {
+                val d = try { bm.restore(list[i], File(env.home, "projects").apply { mkdirs() }) } catch (t: Throwable) { null }
+                runOnUiThread {
+                    Toast.makeText(this, if (d != null) "Restored: ${d.name}" else "Restore failed", Toast.LENGTH_LONG).show()
+                    refresh()
+                }
+            }.start()
+        }.setNegativeButton("Cancel", null).show()
     }
 
     private fun open(dir: File) {
