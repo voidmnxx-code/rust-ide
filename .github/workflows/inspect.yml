@@ -1,0 +1,31 @@
+name: Inspect Termux packages
+on: workflow_dispatch
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - name: List rust-related packages and rust .deb contents
+        run: |
+          python3 - <<'PY'
+          import lzma, urllib.request, subprocess, os, tempfile
+          base="https://packages.termux.dev/apt/termux-main"
+          t=lzma.decompress(urllib.request.urlopen(base+"/dists/stable/main/binary-aarch64/Packages.xz").read()).decode()
+          blocks={}
+          for b in t.split("\n\n"):
+              for l in b.split("\n"):
+                  if l.startswith("Package: "): blocks[l[9:]]=b
+          names=[n for n in blocks if any(k in n for k in ("rust","clippy","lldb","taplo","wasm","cargo","mdbook","tectonic"))]
+          print("PACKAGES:", sorted(names))
+          for n in ("rust","rust-analyzer"):
+              b=blocks.get(n)
+              if not b: print(n,"missing"); continue
+              d=dict(l.split(": ",1) for l in b.split("\n") if ": " in l)
+              print(n, d.get("Version"), d.get("Installed-Size"), d.get("Depends"))
+              fn=d["Filename"]
+              p=os.path.join(tempfile.mkdtemp(),"x.deb")
+              open(p,"wb").write(urllib.request.urlopen(base+"/"+fn).read())
+              out=subprocess.run("ar p %s data.tar.xz | tar -tJ | grep -E 'bin/|rustlib/[^/]+/(bin|lib/rustlib)' | head -60"%p,shell=True,capture_output=True,text=True).stdout
+              print(out)
+              out=subprocess.run("ar p %s data.tar.xz | tar -tJ | grep -E 'rustlib/' | sed -E 's#.*/rustlib/([^/]+)/.*#\\1#' | sort | uniq -c"%p,shell=True,capture_output=True,text=True).stdout
+              print("TARGETS:",out)
+          PY
