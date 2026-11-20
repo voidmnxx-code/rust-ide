@@ -40,6 +40,7 @@ class ProjectsActivity : AppCompatActivity() {
         })
         val bar = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         bar.addView(flatButton("+ New project") { newProject() })
+        bar.addView(flatButton("Learn") { startActivity(Intent(this, LearnActivity::class.java)) })
         bar.addView(flatButton("Terminal") {
             startActivity(Intent(this, TerminalActivity::class.java))
         })

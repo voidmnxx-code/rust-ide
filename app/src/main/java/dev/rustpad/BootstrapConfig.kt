@@ -17,5 +17,6 @@ object BootstrapConfig {
         Stage("apk-tools", "$BASE_URL/bootstrap-apk-tools-aarch64.tar.zst"),
         Stage("rust-analyzer", "$BASE_URL/bootstrap-rust-analyzer-aarch64.tar.zst", optional = true),
         Stage("offline-crates", "$BASE_URL/bootstrap-offline-crates-aarch64.tar.zst", optional = true),
+        Stage("learn", "$BASE_URL/bootstrap-learn-aarch64.tar.zst", optional = true),
     )
 }

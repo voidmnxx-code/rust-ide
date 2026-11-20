@@ -18,9 +18,10 @@ class CargoRunner(private val env: Env) {
         onText: (String) -> Unit,
         onDiag: (Diag) -> Unit,
         onProcess: (Process) -> Unit,
+        trailing: List<String> = emptyList(),
     ): Int {
         val cmd = listOf(File(env.prefix, "bin/cargo").path) + args +
-            listOf("--message-format=json", "-j", jobs.toString())
+            listOf("--message-format=json", "-j", jobs.toString()) + trailing
         val pb = ProcessBuilder(cmd).directory(dir).redirectErrorStream(true)
         pb.environment().apply {
             clear()

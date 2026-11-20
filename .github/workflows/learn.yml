@@ -1,0 +1,24 @@
+name: Build Learn Content
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  learn:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install zstd
+        run: sudo apt-get update && sudo apt-get install -y zstd
+      - name: Build learn archive
+        run: python3 tools/learn/build_learn.py --out dist
+      - name: Publish to release bootstrap-v1 (keeps other assets)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cat dist/SHA256SUMS-learn
+          gh release upload bootstrap-v1 dist/* --clobber

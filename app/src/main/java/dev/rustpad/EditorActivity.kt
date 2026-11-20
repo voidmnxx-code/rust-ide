@@ -217,6 +217,8 @@ class EditorActivity : AppCompatActivity() {
     private var autoTask: Runnable? = null
     private var autoRunning = false
     private var completionPopup: android.widget.ListPopupWindow? = null
+    private var exCourse: String? = null
+    private var exId = ""
 
     private var current: File? = null
     private var dirty = false
@@ -234,9 +236,18 @@ class EditorActivity : AppCompatActivity() {
         settings = Settings(this)
         CrashLogger.install(env)
         project = File(intent.getStringExtra("project") ?: run { finish(); return })
+        exCourse = intent.getStringExtra("ex_course")
+        exId = intent.getStringExtra("ex_id") ?: ""
         buildUi()
         val main = File(project, "src/main.rs")
-        if (main.exists()) openFile(main) else openFile(File(project, "Cargo.toml"))
+        val lib = File(project, "src/lib.rs")
+        val first = intent.getStringExtra("file")?.let { File(it) }
+        when {
+            first != null && first.exists() -> openFile(first)
+            main.exists() -> openFile(main)
+            lib.exists() -> openFile(lib)
+            else -> openFile(File(project, "Cargo.toml"))
+        }
     }
 
     override fun onPause() {
@@ -298,7 +309,20 @@ class EditorActivity : AppCompatActivity() {
         btns.addView(flatButton("Check") { runCargo("check") })
         btns.addView(flatButton("Build") { runCargo("build") })
         btns.addView(flatButton("Run") { runCargo("run") })
-        btns.addView(flatButton("Export APK") { exportApk() })
+        if (exCourse != "rustlings") btns.addView(flatButton("Test") { runCargo("test") })
+        when (exCourse) {
+            "rustlings" -> {
+                btns.addView(flatButton("Hint") { showHint() })
+                btns.addView(flatButton("Solution") { showSolution() })
+                btns.addView(flatButton("Reset") { resetExercise() })
+                btns.addView(flatButton("Next") { nextExercise() })
+            }
+            "exercism" -> {
+                btns.addView(flatButton("Instructions") { showInstructions() })
+                btns.addView(flatButton("Example") { showExample() })
+            }
+        }
+        if (exCourse == null) btns.addView(flatButton("Export APK") { exportApk() })
         btns.addView(flatButton("Stop") { proc?.destroy() })
         btns.addView(flatButton("Output") { panel.visibility = if (panel.visibility == View.VISIBLE) View.GONE else View.VISIBLE })
         btns.addView(flatButton("Term") {
@@ -714,9 +738,112 @@ class EditorActivity : AppCompatActivity() {
         }
     }
 
+    // ---------- التمارين (Learn) ----------
+    private fun exercise(): RlExercise? = LearnContent(env).rustlings().firstOrNull { it.name == exId }
+
+    private fun showText(title: String, text: String) {
+        val tv = TextView(this).apply {
+            this.text = text; typeface = Typeface.MONOSPACE; textSize = 12f
+            setTextIsSelectable(true); setPadding(dp(14), dp(10), dp(14), dp(10))
+        }
+        AlertDialog.Builder(this).setTitle(title).setView(ScrollView(this).apply { addView(tv) })
+            .setPositiveButton("Close", null).show()
+    }
+
+    private fun showHint() {
+        val e = exercise() ?: return
+        showText("Hint - ${e.name}", e.hint.ifBlank { "No hint for this exercise." })
+    }
+
+    private fun showSolution() {
+        val e = exercise() ?: return
+        AlertDialog.Builder(this).setTitle("Show the solution?")
+            .setMessage("Try the hint first. Seeing the solution spoils the exercise.")
+            .setPositiveButton("Show") { _, _ ->
+                val f = LearnContent(env).rustlingsSolution(e)
+                showText("Solution - ${e.name}", if (f.exists()) f.readText() else "Solution not found.")
+            }.setNegativeButton("Cancel", null).show()
+    }
+
+    private fun resetExercise() {
+        val e = exercise() ?: return
+        AlertDialog.Builder(this).setTitle("Reset ${e.name}?")
+            .setMessage("Your changes to this exercise will be replaced by the original.")
+            .setPositiveButton("Reset") { _, _ ->
+                val f = LearnContent(env).ensureRustlings(e, reset = true)
+                dirty = false; openFile(f, reload = true)
+            }.setNegativeButton("Cancel", null).show()
+    }
+
+    private fun nextExercise() {
+        val lc = LearnContent(env)
+        val all = lc.rustlings()
+        val i = all.indexOfFirst { it.name == exId }
+        if (i < 0 || i + 1 >= all.size) { toast("No more exercises - well done!"); return }
+        val n = all[i + 1]
+        save()
+        exId = n.name
+        openFile(lc.ensureRustlings(n))
+        toast(n.name)
+    }
+
+    private fun runRustlings(sub: String) {
+        if (proc != null) { toast("Already running - tap Stop"); return }
+        if (!env.isInstalled("base")) { toast("Toolchain not installed (Terminal → Bootstrap)"); return }
+        val f = current ?: return
+        save()
+        val ex = exercise()
+        val mode = when { sub == "check" -> "check"; ex?.test == true -> "test"; else -> "run" }
+        output.text = ""; diagList.removeAllViews(); panel.visibility = View.VISIBLE
+        KeepAliveService.start(this, "exercise")
+        thread(name = "exercise") {
+            val code = try {
+                val pb = ProcessBuilder(File(env.prefix, "bin/bash").path, File(env.prefix, "bin/rustpad-ex").path, f.path, mode)
+                    .directory(project).redirectErrorStream(true)
+                pb.environment().apply { clear(); putAll(env.environment()) }
+                val p = pb.start()
+                proc = p
+                p.inputStream.bufferedReader().forEachLine { appendOut(it + "\n") }
+                p.waitFor()
+            } catch (t: Throwable) { appendOut("error: $t\n"); -1 }
+            proc = null
+            KeepAliveService.stop(this)
+            appendOut("[exit $code]\n")
+            runOnUiThread {
+                if (code == 0 && mode != "check") onSolved()
+                else if (code == 0) toast("Compiles - tap Run to check it")
+            }
+        }
+    }
+
+    private fun onSolved() {
+        LearnProgress(this).mark("rustlings", exId)
+        AlertDialog.Builder(this).setTitle("Solved: $exId")
+            .setMessage("Nice work. Continue to the next exercise?")
+            .setPositiveButton("Next") { _, _ -> nextExercise() }
+            .setNegativeButton("Stay", null).show()
+    }
+
+    private fun showInstructions() {
+        val f = File(project, ".docs/instructions.md")
+        if (!f.exists()) { toast("No instructions"); return }
+        save()
+        startActivity(Intent(this, MarkdownActivity::class.java)
+            .putExtra("path", f.path).putExtra("base", project.path).putExtra("title", exId))
+    }
+
+    private fun showExample() {
+        AlertDialog.Builder(this).setTitle("Show the example solution?")
+            .setMessage("Seeing it spoils the exercise.")
+            .setPositiveButton("Show") { _, _ ->
+                val f = LearnContent(env).exercismExample(exId)
+                showText("Example - $exId", if (f.exists()) f.readText() else "Not found.")
+            }.setNegativeButton("Cancel", null).show()
+    }
+
     // ---------- cargo ----------
     // ---------- rust-analyzer (كسول) ----------
-    private fun raWanted() = settings.raEnabled && current?.extension == "rs" &&
+    private fun raWanted() = exCourse != "rustlings" && settings.raEnabled && current?.extension == "rs" &&
         File(env.prefix, "bin/rust-analyzer").exists()
 
     private fun ensureRa(): RaClient? {
@@ -772,7 +899,7 @@ class EditorActivity : AppCompatActivity() {
 
     private fun scheduleAutoCheck() {
         autoTask?.let { handler.removeCallbacks(it) }
-        if (!settings.autoCheck || current?.extension != "rs") return
+        if (!settings.autoCheck || current?.extension != "rs" || exCourse == "rustlings") return
         val r = Runnable {
             if (proc == null && BuildTuner.canBackgroundWork(this)) runCargo("check", silent = true)
         }
@@ -869,6 +996,7 @@ class EditorActivity : AppCompatActivity() {
     }
 
     private fun runCargo(sub: String, silent: Boolean = false) {
+        if (exCourse == "rustlings") { if (!silent) runRustlings(sub); return }
         if (proc != null) {
             if (autoRunning && !silent) { proc?.destroy(); handler.postDelayed({ runCargo(sub) }, 600) }
             else if (!silent) toast("Already running — tap Stop")
@@ -891,12 +1019,17 @@ class EditorActivity : AppCompatActivity() {
                         if (d.level == "error") errors++ else warnings++
                         runOnUiThread { addDiag(d) }
                     },
-                    onProcess = { proc = it })
+                    onProcess = { proc = it },
+                    trailing = if (sub == "test" && exCourse == "exercism") listOf("--", "--include-ignored") else emptyList())
             } catch (t: Throwable) { appendOut("error: $t\n"); -1 }
             proc = null
             autoRunning = false
             if (!silent) KeepAliveService.stop(this)
             appendOut("[cargo $sub exited with $code — $errors errors, $warnings warnings, -j$jobs]\n")
+            if (code == 0 && sub == "test" && exCourse == "exercism") {
+                LearnProgress(this).mark("exercism", exId)
+                runOnUiThread { toast("All tests pass - solved!") }
+            }
             if (code == 137 || code == -9 || code == 143) {
                 appendOut("!! The build was killed (probably out of memory). Try: Settings -> turn off rust-analyzer and auto check, close other apps, and rebuild.\n")
             }

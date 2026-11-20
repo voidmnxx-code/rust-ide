@@ -77,6 +77,13 @@ for j in android.jar d8.jar apksigner.jar; do
   f=$(find "@PREFIX@" -name "$j" 2>/dev/null | head -1); [ -n "$f" ] && ok "$j" || bad "$j missing"
 done
 
+echo "-- learn content"
+L="@PREFIX@/share/rustpad/learn"
+if [ -f "$L/VERSIONS.json" ]; then
+  ok "learn content ($(ls "$L/exercism/practice" | wc -l) exercism, $(grep -c '^\[\[exercises' "$L/rustlings/info.toml") rustlings)"
+  t "rustpad-ex check" bash "@PREFIX@/bin/rustpad-ex" "$L/rustlings/solutions/00_intro/intro1.rs" run
+else skip "learn stage not installed"; fi
+
 echo "-- resources"
 echo "      RAM: $(awk '/MemTotal/{printf "%.1f GiB",$2/1048576}' /proc/meminfo)  free: $(awk '/MemAvailable/{printf "%.1f GiB",$2/1048576}' /proc/meminfo)"
 echo "      disk free: $(df -h "$HOME" | awk 'NR==2{print $4}')"

@@ -10,7 +10,7 @@ object AssetInstaller {
         try {
             env.ensureDirs()
             val bin = File(env.prefix, "bin").apply { mkdirs() }
-            for (name in listOf("rustpad-export", "rustpad-warm", "rustpad-crates", "rustpad-selftest")) {
+            for (name in listOf("rustpad-export", "rustpad-warm", "rustpad-crates", "rustpad-selftest", "rustpad-ex")) {
                 val script = ctx.assets.open("$name.sh").bufferedReader().readText()
                     .replace("@PREFIX@", env.prefix.path)
                 val target = File(bin, name)
