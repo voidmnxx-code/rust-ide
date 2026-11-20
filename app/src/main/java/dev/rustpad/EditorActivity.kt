@@ -480,6 +480,8 @@ class EditorActivity : AppCompatActivity() {
         keys.addView(keyButton("Redo") { redo() })
         keys.addView(keyButton("Tab") { insert("    ") })
         keys.addView(keyButton("Complete") { requestCompletion() })
+        keys.addView(keyButton("Def") { goDefinition() })
+        keys.addView(keyButton("Info") { showHover() })
         for (k in listOf("{", "}", "(", ")", "[", "]", ";", ":", "<", ">", "&", "'", "\"", "=", "!", "_", "|", "*", "-", "+", "/", ",", ".", "?", "#")) {
             keys.addView(keyButton(k) { insert(k) })
         }
@@ -803,6 +805,169 @@ class EditorActivity : AppCompatActivity() {
         }
     }
 
+    // ---------- rust-analyzer: تنقّل وتحرير ----------
+    private fun raAt(block: (RaClient, File, Int, Int) -> Unit) {
+        val f = current ?: return
+        if (f.extension != "rs") { toast("Rust files only"); return }
+        unfoldAll()
+        val c = ensureRa()
+        if (c == null) { toast("rust-analyzer is off, paused, or not installed (see Settings)"); return }
+        if (!c.ready) { toast("rust-analyzer is starting..."); return }
+        c.sync(f, editor.text.toString())
+        val (line, col) = lineCol(editor.selectionStart.coerceAtLeast(0))
+        block(c, f, line, col)
+    }
+
+    private fun goDefinition() = raAt { c, f, l, col ->
+        c.definition(f, l, col) { locs -> runOnUiThread {
+            when (locs.size) { 0 -> toast("No definition found"); 1 -> gotoLoc(locs[0]); else -> pickLoc("Definitions", locs) }
+        } }
+    }
+
+    private fun showHover() = raAt { c, f, l, col ->
+        c.hover(f, l, col) { txt -> runOnUiThread { if (txt == null) toast("No info here") else showText("Info", txt) } }
+    }
+
+    private fun findReferences() = raAt { c, f, l, col ->
+        c.references(f, l, col) { locs -> runOnUiThread {
+            if (locs.isEmpty()) toast("No references") else pickLoc("References (${locs.size})", locs)
+        } }
+    }
+
+    private fun renameSymbol() = raAt { c, f, l, col ->
+        val t = editor.text
+        var s = editor.selectionStart.coerceIn(0, t.length); var e = s
+        while (s > 0 && (t[s - 1].isLetterOrDigit() || t[s - 1] == '_')) s--
+        while (e < t.length && (t[e].isLetterOrDigit() || t[e] == '_')) e++
+        val input = EditText(this).apply { setText(t.substring(s, e)); setSelection(0, text.length); setSingleLine() }
+        AlertDialog.Builder(this).setTitle("Rename symbol").setView(input)
+            .setPositiveButton("Rename") { _, _ ->
+                val name = input.text.toString().trim()
+                if (name.isEmpty()) return@setPositiveButton
+                c.rename(f, l, col, name) { we, err -> runOnUiThread {
+                    if (we == null) toast(err ?: "Cannot rename here") else applyWorkspaceEdit(we)
+                } }
+            }.setNegativeButton("Cancel", null).show()
+    }
+
+    private fun codeActions() = raAt { c, f, l, col ->
+        val (l2, c2) = lineCol(maxOf(editor.selectionStart, editor.selectionEnd).coerceAtLeast(0))
+        val (l1, c1) = lineCol(minOf(editor.selectionStart, editor.selectionEnd).coerceAtLeast(0))
+        c.codeActions(f, l1, c1, l2, c2) { acts -> runOnUiThread {
+            if (acts.isEmpty()) { toast("No actions here"); return@runOnUiThread }
+            AlertDialog.Builder(this).setTitle("Actions")
+                .setItems(acts.take(40).map { it.title }.toTypedArray()) { _, i ->
+                    c.resolveEdit(acts[i]) { we -> runOnUiThread {
+                        if (we == null) toast("This action has no edit") else applyWorkspaceEdit(we)
+                    } }
+                }.show()
+        } }
+    }
+
+    private fun parseEdits(we: JSONObject): Map<String, List<TextEdit>> {
+        val res = LinkedHashMap<String, MutableList<TextEdit>>()
+        fun add(uri: String, arr: org.json.JSONArray?) {
+            if (arr == null || !uri.startsWith("file://")) return
+            val l = res.getOrPut(uri.removePrefix("file://")) { ArrayList() }
+            for (i in 0 until arr.length()) {
+                val o = arr.optJSONObject(i) ?: continue
+                val r = o.getJSONObject("range"); val a = r.getJSONObject("start"); val b = r.getJSONObject("end")
+                l.add(TextEdit(a.getInt("line"), a.getInt("character"), b.getInt("line"), b.getInt("character"), o.optString("newText")))
+            }
+        }
+        we.optJSONObject("changes")?.let { ch -> ch.keys().forEach { add(it, ch.optJSONArray(it)) } }
+        we.optJSONArray("documentChanges")?.let { dc ->
+            for (i in 0 until dc.length()) {
+                val o = dc.optJSONObject(i) ?: continue
+                add(o.optJSONObject("textDocument")?.optString("uri") ?: continue, o.optJSONArray("edits"))
+            }
+        }
+        return res
+    }
+
+    /** يطبّق WorkspaceEdit على ملفات المشروع (على القرص) ثم يعيد تحميل الملف الحالي. */
+    private fun applyWorkspaceEdit(we: JSONObject) {
+        val edits = parseEdits(we)
+        if (edits.isEmpty()) { toast("Nothing to change"); return }
+        unfoldAll(); save()
+        val root = project.canonicalPath
+        var n = 0
+        for ((path, list) in edits) {
+            val f = File(path)
+            if (!f.isFile || !f.canonicalPath.startsWith(root)) continue
+            var text = f.readText()
+            val starts = ArrayList<Int>().apply { add(0); text.forEachIndexed { i, c -> if (c == '\n') add(i + 1) } }
+            fun off(l: Int, c: Int) = (starts.getOrElse(l) { text.length } + c).coerceAtMost(text.length)
+            for (e in list.sortedWith(compareByDescending<TextEdit> { it.l1 }.thenByDescending { it.c1 })) {
+                text = text.replaceRange(off(e.l1, e.c1), off(e.l2, e.c2), e.text)
+            }
+            f.writeText(text); n++
+        }
+        dirty = false
+        current?.let { openFile(it, reload = true) }
+        raSync()
+        toast("Changed $n file(s)")
+    }
+
+    private fun gotoLoc(l: Loc) {
+        val f = File(l.file)
+        if (f.canonicalPath.startsWith(project.canonicalPath)) {
+            goTo(Diag("note", "", f.relativeTo(project).path, l.line + 1, l.col + 1))
+        } else viewExternal(f, l.line)
+    }
+
+    /** ملف خارج المشروع (المكتبة القياسية أو حزمة): نعرض مقطعاً للقراءة فقط. */
+    private fun viewExternal(f: File, line: Int) {
+        if (!f.isFile) { toast("File not available: ${f.name}"); return }
+        val all = try { f.readLines() } catch (_: Throwable) { emptyList() }
+        val from = maxOf(line - 5, 0)
+        val body = all.drop(from).take(160).mapIndexed { i, s -> "%5d  %s".format(from + i + 1, s) }.joinToString("\n")
+        showText("${f.name}:${line + 1}", f.path + "\n\n" + body)
+    }
+
+    private fun pickLoc(title: String, locs: List<Loc>) {
+        val cache = HashMap<String, List<String>>()
+        val labels = locs.take(80).map { l ->
+            val lines = cache.getOrPut(l.file) { try { File(l.file).readLines() } catch (_: Throwable) { emptyList() } }
+            val name = File(l.file).let { if (it.canonicalPath.startsWith(project.canonicalPath)) it.relativeTo(project).path else it.name }
+            "$name:${l.line + 1}   ${lines.getOrNull(l.line)?.trim()?.take(60) ?: ""}"
+        }
+        AlertDialog.Builder(this).setTitle(title).setItems(labels.toTypedArray()) { _, i -> gotoLoc(locs[i]) }.show()
+    }
+
+    // ---------- rustfmt ----------
+    private fun formatFile() {
+        val f = current ?: return
+        if (f.extension != "rs") { toast("Rust files only"); return }
+        val bin = File(env.prefix, "bin/rustfmt")
+        if (!bin.exists()) { toast("rustfmt is not installed"); return }
+        unfoldAll(); save()
+        val cargo = File(project, "Cargo.toml")
+        val ed = Regex("edition\\s*=\\s*\"(\\d+)\"").find(if (cargo.exists()) cargo.readText() else "")?.groupValues?.get(1)
+            ?: if (exCourse == "rustlings") "2024" else "2021"
+        thread(name = "rustfmt") {
+            val pb = ProcessBuilder(bin.path, "--edition", ed, f.path).directory(project).redirectErrorStream(true)
+            pb.environment().apply { clear(); putAll(env.environment()) }
+            var msg = ""
+            val code = try { val p = pb.start(); msg = p.inputStream.bufferedReader().readText(); p.waitFor() } catch (t: Throwable) { msg = t.toString(); -1 }
+            runOnUiThread {
+                if (code != 0) {
+                    toast("rustfmt failed (see Output)"); appendOut("rustfmt:\n$msg\n"); panel.visibility = View.VISIBLE
+                    return@runOnUiThread
+                }
+                val newText = f.readText()
+                val e = editor.editableText
+                if (newText != e.toString()) {
+                    val sel = minOf(editor.selectionStart.coerceAtLeast(0), newText.length)
+                    e.replace(0, e.length, newText)
+                    editor.setSelection(sel.coerceAtMost(e.length))
+                    dirty = false
+                    toast("Formatted")
+                } else toast("Already formatted")
+            }
+        }
+    }
+
     // ---------- شجرة الملفات (التابلت) ----------
     private fun refreshTree() {
         val box = treeBox ?: return
@@ -856,6 +1021,11 @@ class EditorActivity : AppCompatActivity() {
         val acts = ArrayList<() -> Unit>()
         fun item(label: String, f: () -> Unit) { m.menu.add(0, acts.size, acts.size, label); acts.add(f) }
         item("Save") { save(); toast("Saved") }
+        item("Format file (rustfmt)") { formatFile() }
+        item("Find references") { findReferences() }
+        item("Rename symbol...") { renameSymbol() }
+        item("Code actions / quick fix") { codeActions() }
+        if (exCourse != "rustlings") item("Clippy lints") { runCargo("clippy") }
         item("Build") { runCargo("build") }
         if (exCourse != "rustlings") item("Test") { runCargo("test") }
         if (exCourse == null && File(project, "app.properties").exists()) item("Export APK") { exportApk() }
