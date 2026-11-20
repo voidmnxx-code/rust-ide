@@ -18,6 +18,7 @@ import android.text.Spanned
 import android.text.TextWatcher
 import android.view.Gravity
 import android.view.View
+import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
@@ -481,6 +482,7 @@ class EditorActivity : AppCompatActivity() {
         keys.addView(keyButton("Redo") { redo() })
         keys.addView(keyButton("Tab") { insert("    ") })
         keys.addView(keyButton("Complete") { requestCompletion() })
+        keys.addView(keyButton("//") { toggleComment() })
         keys.addView(keyButton("Def") { goDefinition() })
         keys.addView(keyButton("Info") { showHover() })
         for (k in listOf("{", "}", "(", ")", "[", "]", ";", ":", "<", ">", "&", "'", "\"", "=", "!", "_", "|", "*", "-", "+", "/", ",", ".", "?", "#")) {
@@ -806,6 +808,197 @@ class EditorActivity : AppCompatActivity() {
         }
     }
 
+    // ---------- التنقل داخل المشروع ----------
+    private fun listAdapter(labels: List<String>) = object : android.widget.ArrayAdapter<String>(this, android.R.layout.simple_list_item_1, labels) {
+        override fun getView(p: Int, v: View?, parent: android.view.ViewGroup) =
+            (super.getView(p, v, parent) as TextView).apply {
+                setTextColor(Colors.TEXT); textSize = 13f; maxLines = 2; typeface = Typeface.MONOSPACE
+            }
+    }
+
+    private fun projectFiles(): List<String> = project.walkTopDown()
+        .onEnter { it.name != "target" && it.name != ".git" && it.name != "dist" && it.name != ".solutions" }
+        .filter { it.isFile }.take(4000).map { it.relativeTo(project).path }.sorted().toList()
+
+    /** 0.. أفضل؛ -1 لا تطابق. اسم الملف أولاً ثم أحرف متتالية في المسار. */
+    private fun matchScore(path: String, q: String): Int {
+        if (q.isEmpty()) return 0
+        val p = path.lowercase(); val n = p.substringAfterLast('/'); val ql = q.lowercase()
+        val i = n.indexOf(ql)
+        if (i >= 0) return i
+        var j = 0
+        for (c in p) if (j < ql.length && c == ql[j]) j++
+        return if (j == ql.length) 100 + p.length else -1
+    }
+
+    private fun quickOpen() {
+        val files = projectFiles()
+        var shown: List<String> = emptyList()
+        val input = EditText(this).apply { hint = "file name"; setSingleLine(); setTextColor(Colors.TEXT); setHintTextColor(Colors.DIM) }
+        val list = android.widget.ListView(this)
+        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(Colors.PANEL); setPadding(dp(12), dp(8), dp(12), 0) }
+        box.addView(input)
+        box.addView(list, LinearLayout.LayoutParams(-1, dp(320)))
+        val dlg = AlertDialog.Builder(this).setTitle("Open file").setView(box).setNegativeButton("Cancel", null).create()
+        fun update(q: String) {
+            shown = files.map { it to matchScore(it, q) }.filter { it.second >= 0 }.sortedBy { it.second }.take(60).map { it.first }
+            list.adapter = listAdapter(shown)
+        }
+        input.addTextChangedListener(object : android.text.TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+            override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) { update(s.toString()) }
+            override fun afterTextChanged(s: Editable?) {}
+        })
+        fun open(i: Int) { if (i in shown.indices) { dlg.dismiss(); openFile(File(project, shown[i])) } }
+        list.setOnItemClickListener { _, _, i, _ -> open(i) }
+        input.setOnEditorActionListener { _, _, _ -> open(0); true }
+        input.imeOptions = android.view.inputmethod.EditorInfo.IME_ACTION_GO
+        update("")
+        dlg.show()
+        input.requestFocus()
+    }
+
+    private fun searchProject() {
+        unfoldAll(); save()
+        class Hit(val rel: String, val line: Int, val text: String)
+        var hits: List<Hit> = emptyList()
+        val input = EditText(this).apply { hint = "search text"; setSingleLine(); setTextColor(Colors.TEXT); setHintTextColor(Colors.DIM) }
+        val regex = CheckBox(this).apply { text = "Regex"; setTextColor(Colors.TEXT) }
+        val status = TextView(this).apply { setTextColor(Colors.DIM); textSize = 12f }
+        val list = android.widget.ListView(this)
+        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(Colors.PANEL); setPadding(dp(12), dp(8), dp(12), 0) }
+        box.addView(input); box.addView(regex); box.addView(status)
+        box.addView(list, LinearLayout.LayoutParams(-1, dp(300)))
+        val dlg = AlertDialog.Builder(this).setTitle("Search in project").setView(box).setNegativeButton("Close", null).create()
+        val exts = setOf("rs", "toml", "md", "txt", "json", "yml", "yaml", "sh", "properties", "xml", "html", "css", "js", "kt", "java")
+        fun run() {
+            val q = input.text.toString()
+            if (q.isEmpty()) return
+            val rx = try {
+                Regex(if (regex.isChecked) q else Regex.escape(q), RegexOption.IGNORE_CASE)
+            } catch (e: Exception) { status.text = "Bad pattern: ${e.message}"; return }
+            status.text = "Searching..."
+            thread(name = "search") {
+                val res = ArrayList<Hit>()
+                for (rel in projectFiles()) {
+                    if (res.size >= 300) break
+                    val f = File(project, rel)
+                    if (f.extension.lowercase() !in exts || f.length() > 1_000_000) continue
+                    try {
+                        f.useLines { seq -> seq.forEachIndexed { i, l -> if (res.size < 300 && rx.containsMatchIn(l)) res.add(Hit(rel, i + 1, l.trim().take(80))) } }
+                    } catch (_: Throwable) {}
+                }
+                runOnUiThread {
+                    hits = res
+                    status.text = if (res.isEmpty()) "No matches" else "${res.size}${if (res.size >= 300) "+" else ""} matches"
+                    list.adapter = listAdapter(res.map { "${it.rel}:${it.line}  ${it.text}" })
+                }
+            }
+        }
+        input.imeOptions = android.view.inputmethod.EditorInfo.IME_ACTION_SEARCH
+        input.setOnEditorActionListener { _, _, _ -> run(); true }
+        list.setOnItemClickListener { _, _, i, _ ->
+            val h = hits.getOrNull(i) ?: return@setOnItemClickListener
+            dlg.dismiss(); goTo(Diag("note", "", h.rel, h.line, 1))
+        }
+        dlg.setButton(android.content.DialogInterface.BUTTON_POSITIVE, "Search") { _, _ -> }
+        dlg.show()
+        dlg.getButton(android.content.DialogInterface.BUTTON_POSITIVE).setOnClickListener { run() } // لا يغلق الحوار
+        input.requestFocus()
+    }
+
+    private val itemRx = Regex(
+        "^\\s*(?:pub(?:\\([^)]*\\))?\\s+)?(?:(?:async|unsafe|const|extern(?:\\s+\"[^\"]*\")?)\\s+)*" +
+            "(?:fn|struct|enum|trait|impl|mod|type|union)\\b|^\\s*(?:pub(?:\\([^)]*\\))?\\s+)?(?:const|static)\\s+[A-Za-z_]|^\\s*macro_rules!")
+
+    private fun outline() {
+        unfoldAll()
+        val lines = editor.text.toString().split('\n')
+        val idx = ArrayList<Int>(); val labels = ArrayList<String>()
+        for ((i, l) in lines.withIndex()) {
+            if (!itemRx.containsMatchIn(l)) continue
+            val indent = l.length - l.trimStart().length
+            idx.add(i)
+            labels.add("  ".repeat((indent / 4).coerceAtMost(4)) + l.trim().substringBefore('{').trimEnd().take(70) + "   :" + (i + 1))
+        }
+        if (idx.isEmpty()) { toast("No items found"); return }
+        val rel = current?.relativeTo(project)?.path ?: return
+        AlertDialog.Builder(this).setTitle("Symbols (${idx.size})")
+            .setItems(labels.toTypedArray()) { _, k -> goTo(Diag("note", "", rel, idx[k] + 1, 1)) }.show()
+    }
+
+    // ---------- تحرير الأسطر ----------
+    private fun toggleComment() {
+        unfoldAll()
+        val e = editor.editableText; val t = e.toString()
+        val a = minOf(editor.selectionStart, editor.selectionEnd).coerceIn(0, t.length)
+        val b = maxOf(editor.selectionStart, editor.selectionEnd).coerceIn(0, t.length)
+        var ls = a; while (ls > 0 && t[ls - 1] != '\n') ls--
+        val lastPos = if (b > a && t[b - 1] == '\n') b - 1 else b
+        val le = t.indexOf('\n', lastPos).let { if (it < 0) t.length else it }
+        val block = t.substring(ls, le)
+        val lines = block.split('\n')
+        val nb = lines.filter { it.isNotBlank() }
+        fun plain(l: String) = l.trimStart().let { it.startsWith("//") && !it.startsWith("///") && !it.startsWith("//!") }
+        val all = nb.isNotEmpty() && nb.all { plain(it) }
+        val minIndent = nb.minOfOrNull { it.length - it.trimStart().length } ?: 0
+        val out = lines.joinToString("\n") { l ->
+            when {
+                l.isBlank() -> l
+                all -> { val i = l.indexOf("//"); l.substring(0, i) + l.substring(i + 2).removePrefix(" ") }
+                else -> l.substring(0, minIndent) + "// " + l.substring(minIndent)
+            }
+        }
+        e.replace(ls, le, out)
+        if (a == b) editor.setSelection((a + out.length - block.length).coerceIn(ls, ls + out.length))
+        else editor.setSelection(ls, ls + out.length)
+    }
+
+    private fun duplicateLine() {
+        unfoldAll()
+        val e = editor.editableText; val t = e.toString()
+        val a = minOf(editor.selectionStart, editor.selectionEnd).coerceIn(0, t.length)
+        val b = maxOf(editor.selectionStart, editor.selectionEnd).coerceIn(0, t.length)
+        var ls = a; while (ls > 0 && t[ls - 1] != '\n') ls--
+        val lastPos = if (b > a && t[b - 1] == '\n') b - 1 else b
+        val le = t.indexOf('\n', lastPos).let { if (it < 0) t.length else it }
+        val block = t.substring(ls, le)
+        e.insert(le, "\n" + block)
+        editor.setSelection((a + block.length + 1).coerceAtMost(e.length))
+    }
+
+    // ---------- اختصارات لوحة المفاتيح الخارجية ----------
+    override fun dispatchKeyEvent(ev: android.view.KeyEvent): Boolean {
+        if (ev.action == android.view.KeyEvent.ACTION_DOWN && ev.repeatCount == 0) {
+            if (ev.isCtrlPressed) {
+                val sh = ev.isShiftPressed
+                val done = when (ev.keyCode) {
+                    android.view.KeyEvent.KEYCODE_S -> { save(); toast("Saved"); true }
+                    android.view.KeyEvent.KEYCODE_F -> { if (sh) searchProject() else toggleFind(); true }
+                    android.view.KeyEvent.KEYCODE_P -> { quickOpen(); true }
+                    android.view.KeyEvent.KEYCODE_O -> { outline(); true }
+                    android.view.KeyEvent.KEYCODE_B -> { goDefinition(); true }
+                    android.view.KeyEvent.KEYCODE_I -> { showHover(); true }
+                    android.view.KeyEvent.KEYCODE_Z -> { if (sh) redo() else undo(); true }
+                    android.view.KeyEvent.KEYCODE_Y -> { redo(); true }
+                    android.view.KeyEvent.KEYCODE_SLASH -> { toggleComment(); true }
+                    android.view.KeyEvent.KEYCODE_D -> { duplicateLine(); true }
+                    android.view.KeyEvent.KEYCODE_L -> if (ev.isAltPressed) { formatFile(); true } else false
+                    android.view.KeyEvent.KEYCODE_ENTER -> { fabAction(); true }
+                    android.view.KeyEvent.KEYCODE_SPACE -> { requestCompletion(); true }
+                    android.view.KeyEvent.KEYCODE_W -> { tab?.let { closeTab(it) }; true }
+                    android.view.KeyEvent.KEYCODE_R -> if (sh) { renameSymbol(); true } else false
+                    else -> false
+                }
+                if (done) return true
+            } else if (ev.keyCode == android.view.KeyEvent.KEYCODE_F5) { fabAction(); return true }
+            else if (ev.keyCode == android.view.KeyEvent.KEYCODE_TAB && !ev.isShiftPressed && editor.hasFocus()) {
+                insert("    "); return true
+            }
+        }
+        return super.dispatchKeyEvent(ev)
+    }
+
     // ---------- rust-analyzer: تنقّل وتحرير ----------
     private fun raAt(block: (RaClient, File, Int, Int) -> Unit) {
         val f = current ?: return
@@ -1022,6 +1215,11 @@ class EditorActivity : AppCompatActivity() {
         val acts = ArrayList<() -> Unit>()
         fun item(label: String, f: () -> Unit) { m.menu.add(0, acts.size, acts.size, label); acts.add(f) }
         item("Save") { save(); toast("Saved") }
+        item("Open file by name...") { quickOpen() }
+        item("Search in project...") { searchProject() }
+        item("Symbols in this file...") { outline() }
+        item("Toggle comment") { toggleComment() }
+        item("Duplicate line") { duplicateLine() }
         item("Format file (rustfmt)") { formatFile() }
         item("Find references") { findReferences() }
         item("Rename symbol...") { renameSymbol() }
