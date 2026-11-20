@@ -27,6 +27,7 @@ class LearnActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        Colors.load(this)
         env = Env(this)
         CrashLogger.install(env)
         content = LearnContent(env)

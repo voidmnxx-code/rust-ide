@@ -54,6 +54,10 @@ class CodeEditText(ctx: Context) : EditText(ctx) {
     var onGutterTap: ((Int) -> Unit)? = null
     var onFoldSpanTap: ((FoldSpan) -> Unit)? = null
     var cutting = false
+    var onZoom: ((Float) -> Unit)? = null
+    private val scaleDetector = android.view.ScaleGestureDetector(ctx, object : android.view.ScaleGestureDetector.SimpleOnScaleGestureListener() {
+        override fun onScale(d: android.view.ScaleGestureDetector): Boolean { onZoom?.invoke(d.scaleFactor); return true }
+    })
     private var downX = 0f
     private var downY = 0f
     private var downT = 0L
@@ -87,6 +91,8 @@ class CodeEditText(ctx: Context) : EditText(ctx) {
     }
 
     override fun onTouchEvent(ev: android.view.MotionEvent): Boolean {
+        scaleDetector.onTouchEvent(ev)
+        if (scaleDetector.isInProgress) return true
         val slop = context.dp(8)
         when (ev.action) {
             android.view.MotionEvent.ACTION_DOWN -> {
@@ -122,7 +128,7 @@ class CodeEditText(ctx: Context) : EditText(ctx) {
     private val numPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         typeface = Typeface.MONOSPACE; textAlign = Paint.Align.RIGHT
     }
-    private val bgPaint = Paint().apply { color = Color.parseColor("#1A1A1C") }
+    private val bgPaint = Paint().apply { color = Colors.PANEL }
     private val dim = Color.parseColor("#6B7078")
     private val clip = Rect()
 
@@ -175,6 +181,12 @@ class CodeEditText(ctx: Context) : EditText(ctx) {
     }
 }
 
+/** ScrollView يخفي/يُظهر مقبض السحب المرافق له مع نفسه. */
+class PanelScroll(ctx: Context) : ScrollView(ctx) {
+    var companion: View? = null
+    override fun setVisibility(v: Int) { super.setVisibility(v); companion?.visibility = v }
+}
+
 class Edit(var start: Int, var removed: String, var added: String)
 
 class Tab(val file: File) {
@@ -191,7 +203,12 @@ class EditorActivity : AppCompatActivity() {
     private lateinit var editorScroll: ScrollView
     private lateinit var title: TextView
     private lateinit var status: TextView
-    private lateinit var panel: ScrollView
+    private lateinit var panel: PanelScroll
+    private lateinit var panelHandle: View
+    private var treeBox: LinearLayout? = null
+    private var treePanel: View? = null
+    private val collapsed = HashSet<String>()
+    private val isTablet get() = resources.configuration.screenWidthDp >= 720
     private lateinit var diagList: LinearLayout
     private lateinit var output: TextView
 
@@ -233,6 +250,7 @@ class EditorActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        Colors.load(this)
         env = Env(this)
         settings = Settings(this)
         CrashLogger.install(env)
@@ -302,7 +320,7 @@ class EditorActivity : AppCompatActivity() {
             orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
             setBackgroundColor(Colors.PANEL)
         }
-        bar.addView(iconButton("\u2630", "Files") { showFiles() })
+        bar.addView(iconButton("\u2630", "Files") { if (isTablet) treePanel?.let { it.visibility = if (it.visibility == View.VISIBLE) View.GONE else View.VISIBLE } else showFiles() })
         title = TextView(this).apply {
             setTextColor(Colors.TEXT); textSize = 14f; setPadding(dp(4), 0, dp(8), 0)
             maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.MIDDLE
@@ -365,7 +383,7 @@ class EditorActivity : AppCompatActivity() {
         root.addView(findBar)
 
         editor = CodeEditText(this).apply {
-            typeface = Typeface.MONOSPACE; textSize = 14f
+            typeface = Typeface.MONOSPACE; textSize = settings.fontSp
             setTextColor(Colors.TEXT)
             setBackgroundColor(Colors.BG)
             gravity = Gravity.TOP or Gravity.START
@@ -376,6 +394,10 @@ class EditorActivity : AppCompatActivity() {
             gutterPx = dp(48)
             onCursor = { updateStatus() }
             onGutterTap = { ls -> toggleFoldAt(ls) }
+            onZoom = { f ->
+                val n = (settings.fontSp * f).coerceIn(9f, 30f)
+                if (Math.abs(n - settings.fontSp) >= 0.15f) { settings.fontSp = n; setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, n) }
+            }
             onFoldSpanTap = { sp -> unfold(sp) }
         }
         editor.addTextChangedListener(object : TextWatcher {
@@ -405,11 +427,27 @@ class EditorActivity : AppCompatActivity() {
             }
         })
         editorScroll = ScrollView(this).apply { addView(editor) }
-        root.addView(editorScroll, LinearLayout.LayoutParams(-1, 0, 1.2f))
+        root.addView(editorScroll, LinearLayout.LayoutParams(-1, 0, 1f))
 
-        panel = ScrollView(this).apply {
+        panel = PanelScroll(this).apply {
             setBackgroundColor(Colors.PANEL); visibility = View.GONE
         }
+        panelHandle = TextView(this).apply {
+            text = "\u2550\u2550\u2550"; gravity = Gravity.CENTER; setTextColor(Colors.DIM); textSize = 12f
+            setBackgroundColor(Colors.PANEL); visibility = View.GONE
+            var y0 = 0f; var h0 = 0
+            setOnTouchListener { _, ev ->
+                when (ev.action) {
+                    android.view.MotionEvent.ACTION_DOWN -> { y0 = ev.rawY; h0 = panel.layoutParams.height }
+                    android.view.MotionEvent.ACTION_MOVE -> {
+                        val nh = (h0 + (y0 - ev.rawY)).toInt().coerceIn(dp(80), (resources.displayMetrics.heightPixels * 0.7).toInt())
+                        panel.layoutParams = panel.layoutParams.apply { height = nh }
+                    }
+                }
+                true
+            }
+        }
+        panel.companion = panelHandle
         val pbox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(8), dp(4), dp(8), dp(4)) }
         diagList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         output = TextView(this).apply {
@@ -428,7 +466,8 @@ class EditorActivity : AppCompatActivity() {
         raList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         pbox.addView(raList); pbox.addView(diagList); pbox.addView(output)
         panel.addView(pbox)
-        root.addView(panel, LinearLayout.LayoutParams(-1, 0, 0.8f))
+        root.addView(panelHandle, LinearLayout.LayoutParams(-1, dp(24)))
+        root.addView(panel, LinearLayout.LayoutParams(-1, (resources.displayMetrics.heightPixels * 0.32).toInt()))
 
         // صف مفاتيح الرموز
         val keys = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
@@ -446,7 +485,15 @@ class EditorActivity : AppCompatActivity() {
         status = TextView(this).apply { setTextColor(Colors.DIM); textSize = 11f; setPadding(dp(8), dp(2), dp(8), dp(2)) }
         root.addView(status)
         val frame = android.widget.FrameLayout(this)
-        frame.addView(root, android.widget.FrameLayout.LayoutParams(-1, -1))
+        if (isTablet) {
+            val outer = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setBackgroundColor(Colors.BG) }
+            val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(0, dp(4), 0, dp(24)) }
+            treeBox = box
+            treePanel = ScrollView(this).apply { setBackgroundColor(Colors.PANEL); addView(box) }
+            outer.addView(treePanel, LinearLayout.LayoutParams(dp(250), -1))
+            outer.addView(root, LinearLayout.LayoutParams(0, -1, 1f))
+            frame.addView(outer, android.widget.FrameLayout.LayoutParams(-1, -1))
+        } else frame.addView(root, android.widget.FrameLayout.LayoutParams(-1, -1))
         fab = TextView(this).apply {
             text = "\u25B6"; textSize = 22f; setTextColor(Color.WHITE); gravity = Gravity.CENTER
             background = roundBg(Colors.ACCENT, 28)
@@ -665,6 +712,7 @@ class EditorActivity : AppCompatActivity() {
             editorScroll.scrollTo(0, t.scrollY)
         }
         refreshTabs()
+        refreshTree()
         title.text = "${project.name}/${f.relativeTo(project).path}"
         highlightNow()
         updateStatus()
@@ -750,6 +798,43 @@ class EditorActivity : AppCompatActivity() {
             editor.editableText.insert(nl + 1, pad)
             inserting = false
         }
+    }
+
+    // ---------- شجرة الملفات (التابلت) ----------
+    private fun refreshTree() {
+        val box = treeBox ?: return
+        box.removeAllViews()
+        box.addView(TextView(this).apply {
+            text = project.name; textSize = 15f; setTextColor(Colors.TEXT); setTypeface(null, Typeface.BOLD)
+            setPadding(dp(14), dp(10), dp(14), dp(6))
+        })
+        box.addView(TextView(this).apply {
+            text = "+  New file"; textSize = 14f; setTextColor(Colors.ACCENT); setPadding(dp(14), dp(8), dp(14), dp(8))
+            setOnClickListener { newFile() }
+        })
+        var count = 0
+        fun walk(dir: File, depth: Int) {
+            val kids = dir.listFiles()?.filter { it.name != "target" && it.name != ".git" && it.name != "dist" }
+                ?.sortedWith(compareBy({ !it.isDirectory }, { it.name.lowercase() })) ?: return
+            for (f in kids) {
+                if (count++ > 600) return
+                val rel = f.relativeTo(project).path
+                val isCur = f == current
+                box.addView(TextView(this).apply {
+                    val open = f.isDirectory && rel !in collapsed
+                    text = (if (f.isDirectory) (if (open) "\u25BE " else "\u25B8 ") else "   ") + f.name
+                    textSize = 14f
+                    setTextColor(if (isCur) Colors.ACCENT else if (f.isDirectory) Colors.DIM else Colors.TEXT)
+                    setPadding(dp(14 + depth * 14), dp(8), dp(8), dp(8))
+                    setOnClickListener {
+                        if (f.isDirectory) { if (rel in collapsed) collapsed.remove(rel) else collapsed.add(rel); refreshTree() }
+                        else openFile(f)
+                    }
+                })
+                if (f.isDirectory && rel !in collapsed) walk(f, depth + 1)
+            }
+        }
+        walk(project, 0)
     }
 
     // ---------- شريط الأدوات: قائمة المزيد وزر التشغيل ----------
@@ -920,6 +1005,12 @@ class EditorActivity : AppCompatActivity() {
     }
 
     private fun onSettingsChanged() {
+        editor.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, settings.fontSp)
+        if (Colors.needsReload(this)) {
+            save()
+            current?.let { intent.putExtra("file", it.path) }
+            recreate(); return
+        }
         if (!settings.raEnabled) { ra?.stop(); ra = null; raDiags.clear(); raState = ""; refreshRaList() }
         else raSync()
         scheduleAutoCheck()

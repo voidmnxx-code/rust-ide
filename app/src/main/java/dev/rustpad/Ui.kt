@@ -8,15 +8,28 @@ import android.widget.Button
 import android.widget.TextView
 
 object Colors {
-    val BG = Color.parseColor("#121212")
-    val PANEL = Color.parseColor("#1C1C1E")
-    val TEXT = Color.parseColor("#E0E0E0")
-    val DIM = Color.parseColor("#8A8F98")
-    val ERROR = Color.parseColor("#FF6B68")
-    val WARN = Color.parseColor("#E5C07B")
-    val ACCENT = Color.parseColor("#F26B21")
-    val CARD = Color.parseColor("#1C1C1E")
-    val CARD_PRESSED = Color.parseColor("#2A2A2E")
+    var BG = Color.parseColor("#121212")
+    var PANEL = Color.parseColor("#1C1C1E")
+    var TEXT = Color.parseColor("#E0E0E0")
+    var DIM = Color.parseColor("#8A8F98")
+    var ERROR = Color.parseColor("#FF6B68")
+    var WARN = Color.parseColor("#E5C07B")
+    var ACCENT = Color.parseColor("#F26B21")
+    var CARD = Color.parseColor("#1C1C1E")
+    var CARD_PRESSED = Color.parseColor("#2A2A2E")
+    var amoled = false
+
+    /** يطبّق السمة المحفوظة (يُستدعى في بداية كل Activity قبل بناء الواجهة). */
+    fun load(ctx: Context) {
+        val am = Settings(ctx).amoled
+        amoled = am
+        BG = Color.parseColor(if (am) "#000000" else "#121212")
+        PANEL = Color.parseColor(if (am) "#0B0B0C" else "#1C1C1E")
+        CARD = Color.parseColor(if (am) "#131315" else "#1C1C1E")
+        CARD_PRESSED = Color.parseColor(if (am) "#1E1E21" else "#2A2A2E")
+    }
+
+    fun needsReload(ctx: Context) = Settings(ctx).amoled != amoled
 }
 
 fun Context.dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()

@@ -23,6 +23,7 @@ class ProjectsActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        Colors.load(this)
         env = Env(this)
         env.ensureDirs()
         CrashLogger.install(env)
@@ -81,6 +82,7 @@ class ProjectsActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
+        if (Colors.needsReload(this)) { recreate(); return }
         refresh()
     }
 
@@ -173,7 +175,7 @@ class ProjectsActivity : AppCompatActivity() {
         item("Clone repository...") { cloneDialog() }
         item("Backup all projects") { backupAll() }
         item("Restore from backup...") { restoreDialog() }
-        item("Settings") { SettingsDialog.show(this) { CargoConfig.sync(env, Settings(this)) } }
+        item("Settings") { SettingsDialog.show(this) { CargoConfig.sync(env, Settings(this)); if (Colors.needsReload(this)) recreate() } }
         item("Installed crates") { term("rustpad-crates | less") }
         item("Warm build cache") { term("rustpad-warm") }
         item("Self-test") { term("rustpad-selftest") }

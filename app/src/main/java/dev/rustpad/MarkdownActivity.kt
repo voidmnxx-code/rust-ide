@@ -34,6 +34,7 @@ class MarkdownActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        Colors.load(this)
         env = Env(this)
         CrashLogger.install(env)
         file = File(intent.getStringExtra("path") ?: run { finish(); return })
