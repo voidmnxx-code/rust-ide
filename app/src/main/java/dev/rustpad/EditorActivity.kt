@@ -218,6 +218,7 @@ class EditorActivity : AppCompatActivity() {
     private var autoRunning = false
     private var completionPopup: android.widget.ListPopupWindow? = null
     private var exCourse: String? = null
+    private lateinit var fab: TextView
     private var exId = ""
 
     private var current: File? = null
@@ -297,44 +298,38 @@ class EditorActivity : AppCompatActivity() {
             setBackgroundColor(Colors.BG)
         }
 
-        val bar = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        val bar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+            setBackgroundColor(Colors.PANEL)
+        }
+        bar.addView(iconButton("\u2630", "Files") { showFiles() })
         title = TextView(this).apply {
-            setTextColor(Colors.TEXT); textSize = 13f; setPadding(dp(8), 0, dp(8), 0)
-            maxLines = 1
+            setTextColor(Colors.TEXT); textSize = 14f; setPadding(dp(4), 0, dp(8), 0)
+            maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.MIDDLE
         }
         bar.addView(title, LinearLayout.LayoutParams(0, -2, 1f))
-        val btns = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        btns.addView(flatButton("Files") { showFiles() })
-        btns.addView(flatButton("Save") { save(); toast("Saved") })
-        btns.addView(flatButton("Check") { runCargo("check") })
-        btns.addView(flatButton("Build") { runCargo("build") })
-        btns.addView(flatButton("Run") { runCargo("run") })
-        if (exCourse != "rustlings") btns.addView(flatButton("Test") { runCargo("test") })
-        when (exCourse) {
-            "rustlings" -> {
-                btns.addView(flatButton("Hint") { showHint() })
-                btns.addView(flatButton("Solution") { showSolution() })
-                btns.addView(flatButton("Reset") { resetExercise() })
-                btns.addView(flatButton("Next") { nextExercise() })
-            }
-            "exercism" -> {
-                btns.addView(flatButton("Instructions") { showInstructions() })
-                btns.addView(flatButton("Example") { showExample() })
-            }
-        }
-        if (exCourse == null) btns.addView(flatButton("Export APK") { exportApk() })
-        btns.addView(flatButton("Stop") { proc?.destroy() })
-        btns.addView(flatButton("Output") { panel.visibility = if (panel.visibility == View.VISIBLE) View.GONE else View.VISIBLE })
-        btns.addView(flatButton("Term") {
-            save()
-            startActivity(Intent(this, TerminalActivity::class.java).putExtra("cwd", project.path))
-        })
-        btns.addView(flatButton("Find") { toggleFind() })
-        btns.addView(flatButton("Git") { showGit() })
-        btns.addView(flatButton("Settings") { SettingsDialog.show(this) { onSettingsChanged() } })
-        bar.addView(HorizontalScrollView(this).apply { addView(btns); isHorizontalScrollBarEnabled = false },
-            LinearLayout.LayoutParams(0, -2, 2f))
+        bar.addView(iconButton("\u2713", "Check") { runCargo("check") })
+        bar.addView(iconButton("\u2315", "Find") { toggleFind() })
+        lateinit var moreBtn: View
+        moreBtn = iconButton("\u22EF", "More") { showMore(moreBtn) }
+        bar.addView(moreBtn)
         root.addView(bar)
+
+        // إجراءات سياقية للتمارين
+        if (exCourse != null) {
+            val chips = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(dp(8), dp(4), dp(8), dp(4)) }
+            fun addChip(l: String, f: () -> Unit) =
+                chips.addView(chip(l, f), LinearLayout.LayoutParams(-2, -2).apply { rightMargin = dp(8) })
+            when (exCourse) {
+                "rustlings" -> { addChip("Hint") { showHint() }; addChip("Solution") { showSolution() }
+                    addChip("Reset") { resetExercise() }; addChip("Next \u25B6") { nextExercise() } }
+                "exercism" -> { addChip("Instructions") { showInstructions() }; addChip("Test") { runCargo("test") }
+                    addChip("Example") { showExample() } }
+            }
+            root.addView(HorizontalScrollView(this).apply {
+                addView(chips); isHorizontalScrollBarEnabled = false; setBackgroundColor(Colors.BG)
+            })
+        }
 
         tabBar = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         root.addView(HorizontalScrollView(this).apply {
@@ -437,20 +432,39 @@ class EditorActivity : AppCompatActivity() {
 
         // صف مفاتيح الرموز
         val keys = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        keys.addView(flatButton("Fold") { foldAtCursor() })
-        keys.addView(flatButton("Unfold all") { unfoldAll() })
-        keys.addView(flatButton("Undo") { undo() })
-        keys.addView(flatButton("Redo") { redo() })
-        keys.addView(flatButton("Tab") { insert("    ") })
-        keys.addView(flatButton("Complete") { requestCompletion() })
+        keys.addView(keyButton("Fold") { foldAtCursor() })
+        keys.addView(keyButton("Unfold all") { unfoldAll() })
+        keys.addView(keyButton("Undo") { undo() })
+        keys.addView(keyButton("Redo") { redo() })
+        keys.addView(keyButton("Tab") { insert("    ") })
+        keys.addView(keyButton("Complete") { requestCompletion() })
         for (k in listOf("{", "}", "(", ")", "[", "]", ";", ":", "<", ">", "&", "'", "\"", "=", "!", "_", "|", "*", "-", "+", "/", ",", ".", "?", "#")) {
-            keys.addView(flatButton(k) { insert(k) })
+            keys.addView(keyButton(k) { insert(k) })
         }
         root.addView(HorizontalScrollView(this).apply { addView(keys); isHorizontalScrollBarEnabled = false })
 
         status = TextView(this).apply { setTextColor(Colors.DIM); textSize = 11f; setPadding(dp(8), dp(2), dp(8), dp(2)) }
         root.addView(status)
-        setContentView(root)
+        val frame = android.widget.FrameLayout(this)
+        frame.addView(root, android.widget.FrameLayout.LayoutParams(-1, -1))
+        fab = TextView(this).apply {
+            text = "\u25B6"; textSize = 22f; setTextColor(Color.WHITE); gravity = Gravity.CENTER
+            background = roundBg(Colors.ACCENT, 28)
+            elevation = dp(6).toFloat()
+            contentDescription = "Run"
+            setOnClickListener { fabAction() }
+        }
+        frame.addView(fab, android.widget.FrameLayout.LayoutParams(dp(56), dp(56), Gravity.BOTTOM or Gravity.END).apply {
+            rightMargin = dp(16); bottomMargin = dp(96)
+        })
+        setContentView(frame)
+        handler.post(object : Runnable {
+            override fun run() {
+                if (isFinishing) return
+                fab.text = if (proc != null) "\u25A0" else "\u25B6"
+                handler.postDelayed(this, 400)
+            }
+        })
         window.setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
     }
 
@@ -736,6 +750,36 @@ class EditorActivity : AppCompatActivity() {
             editor.editableText.insert(nl + 1, pad)
             inserting = false
         }
+    }
+
+    // ---------- شريط الأدوات: قائمة المزيد وزر التشغيل ----------
+    private fun fabAction() {
+        if (proc != null) { proc?.destroy(); return }
+        when {
+            exCourse == "exercism" -> runCargo("test")
+            exCourse == "rustlings" -> runCargo("run")
+            File(project, "app.properties").exists() -> exportApk()
+            else -> runCargo("run")
+        }
+    }
+
+    private fun showMore(anchor: View) {
+        val m = android.widget.PopupMenu(this, anchor)
+        val acts = ArrayList<() -> Unit>()
+        fun item(label: String, f: () -> Unit) { m.menu.add(0, acts.size, acts.size, label); acts.add(f) }
+        item("Save") { save(); toast("Saved") }
+        item("Build") { runCargo("build") }
+        if (exCourse != "rustlings") item("Test") { runCargo("test") }
+        if (exCourse == null && File(project, "app.properties").exists()) item("Export APK") { exportApk() }
+        item("Output panel") { panel.visibility = if (panel.visibility == View.VISIBLE) View.GONE else View.VISIBLE }
+        item("Terminal here") {
+            save()
+            startActivity(Intent(this, TerminalActivity::class.java).putExtra("cwd", project.path))
+        }
+        if (exCourse == null) item("Git...") { showGit() }
+        item("Settings") { SettingsDialog.show(this) { onSettingsChanged() } }
+        m.setOnMenuItemClickListener { acts[it.itemId](); true }
+        m.show()
     }
 
     // ---------- التمارين (Learn) ----------
