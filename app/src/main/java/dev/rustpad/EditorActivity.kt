@@ -171,10 +171,13 @@ class CodeEditText(ctx: Context) : EditText(ctx) {
                 numPaint.color = col ?: dim
                 canvas.drawText(num.toString(), x, (lay.getLineBaseline(i) + top).toFloat(), numPaint)
                 if (folded.isNotEmpty() || ls in foldStarts) {
-                    numPaint.color = dim
+                    val old = numPaint.textSize
+                    numPaint.textSize = textSize * 1.35f
+                    numPaint.color = if (folded.isNotEmpty()) Colors.ACCENT else Color.parseColor("#A0A6AF")
                     numPaint.textAlign = Paint.Align.LEFT
-                    canvas.drawText(if (folded.isNotEmpty()) "\u25B8" else "\u25BE", 2f, (lay.getLineBaseline(i) + top).toFloat(), numPaint)
+                    canvas.drawText(if (folded.isNotEmpty()) "\u25B6" else "\u25BC", resources.displayMetrics.density * 2, (lay.getLineBaseline(i) + top).toFloat(), numPaint)
                     numPaint.textAlign = Paint.Align.RIGHT
+                    numPaint.textSize = old
                 }
             }
         }
@@ -390,8 +393,8 @@ class EditorActivity : AppCompatActivity() {
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE or
                 InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS or InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD
             setHorizontallyScrolling(false)
-            setPadding(dp(52), dp(8), dp(8), dp(200))
-            gutterPx = dp(48)
+            setPadding(dp(60), dp(8), dp(8), dp(200))
+            gutterPx = dp(56)
             onCursor = { updateStatus() }
             onGutterTap = { ls -> toggleFoldAt(ls) }
             onZoom = { f ->
