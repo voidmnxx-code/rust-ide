@@ -21,6 +21,8 @@ t "java"   java -version
 t "aapt2"  aapt2 version
 t "d8"     d8 --version
 t "apksigner" apksigner --version
+t "rustfmt" rustfmt --version
+t "clippy" cargo clippy --version
 t "rust target android" bash -c 'rustc --print target-list | grep -q aarch64-linux-android && ls "$(rustc --print sysroot)"/lib/rustlib/aarch64-linux-android/lib | grep -q libstd'
 
 echo "-- build + run (hello)"
