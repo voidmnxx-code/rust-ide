@@ -1241,7 +1241,13 @@ class EditorActivity : AppCompatActivity() {
             save()
             startActivity(Intent(this, TestsActivity::class.java).putExtra("project", project.path))
         }
-        if (exCourse == null && File(project, "app.properties").exists()) item("Export APK") { exportApk() }
+        if (exCourse == null && File(project, "app.properties").exists()) {
+            item("App settings...") {
+                save()
+                startActivity(Intent(this, AppSettingsActivity::class.java).putExtra("project", project.path))
+            }
+            item("Export APK") { exportApk() }
+        }
         item("Output panel") { panel.visibility = if (panel.visibility == View.VISIBLE) View.GONE else View.VISIBLE }
         item("Terminal here") {
             save()
@@ -1793,7 +1799,7 @@ class EditorActivity : AppCompatActivity() {
 
     private fun offerInstall(apk: File) {
         AlertDialog.Builder(this).setTitle("APK ready")
-            .setMessage("${apk.name} (${apk.length() / 1024} KB)\nSigned with the local RustPad key.")
+            .setMessage("${apk.name} (${apk.length() / 1024} KB)\nSigned with the ${if (AppProps(File(project, "app.properties"))["signing"] == "release") "release" else "local RustPad"} key.")
             .setPositiveButton("Install") { _, _ -> installApk(apk) }
             .setNegativeButton("Close", null).show()
     }

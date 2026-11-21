@@ -45,6 +45,10 @@
             android:exported="false" />
 
         <activity
+            android:name=".AppSettingsActivity"
+            android:exported="false" />
+
+        <activity
             android:name=".MarkdownActivity"
             android:exported="false" />
 
