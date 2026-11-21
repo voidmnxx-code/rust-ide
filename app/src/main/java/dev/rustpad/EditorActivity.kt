@@ -1237,6 +1237,10 @@ class EditorActivity : AppCompatActivity() {
         if (exCourse != "rustlings") item("Clippy lints") { runCargo("clippy") }
         item("Build") { runCargo("build") }
         if (exCourse != "rustlings") item("Test") { runCargo("test") }
+        if (exCourse != "rustlings") item("Tests panel...") {
+            save()
+            startActivity(Intent(this, TestsActivity::class.java).putExtra("project", project.path))
+        }
         if (exCourse == null && File(project, "app.properties").exists()) item("Export APK") { exportApk() }
         item("Output panel") { panel.visibility = if (panel.visibility == View.VISIBLE) View.GONE else View.VISIBLE }
         item("Terminal here") {
