@@ -41,6 +41,7 @@ public class MainActivity extends Activity {
     private final Map<String, EditText> inputs = new LinkedHashMap<>();
     private final Handler handler = new Handler(Looper.getMainLooper());
     private ScrollView scroll;
+    private Device device;
     private int tickMs = 0;
     private boolean interceptBack = false;
     private final Runnable tickTask = new Runnable() {
@@ -55,6 +56,9 @@ public class MainActivity extends Activity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         try { Os.setenv("RUSTPAD_DATA", getFilesDir().getPath(), true); } catch (Throwable ignored) { }
+        device = new Device(this, new Device.Sink() {
+            @Override public void send(String id, String value) { MainActivity.this.send(id, value); }
+        });
         scroll = new ScrollView(this);
         scroll.setFillViewport(true);
         setContentView(scroll);
@@ -67,7 +71,17 @@ public class MainActivity extends Activity {
         }
     }
 
-    @Override protected void onPause() { handler.removeCallbacks(tickTask); super.onPause(); }
+    @Override protected void onPause() { handler.removeCallbacks(tickTask); device.stopAll(); super.onPause(); }
+
+    @Override protected void onActivityResult(int req, int res, android.content.Intent data) {
+        super.onActivityResult(req, res, data);
+        device.onActivityResult(req, res, data);
+    }
+
+    @Override public void onRequestPermissionsResult(int code, String[] perms, int[] res) {
+        super.onRequestPermissionsResult(code, perms, res);
+        device.onPermission(code, perms, res);
+    }
 
     @Override protected void onResume() {
         super.onResume();
@@ -89,6 +103,12 @@ public class MainActivity extends Activity {
                 scroll.removeAllViews();
                 scroll.addView(v);
                 scroll.post(() -> scroll.scrollTo(0, y));
+            }
+            JSONArray cmds = o.optJSONArray("cmds");
+            if (cmds != null) for (int i = 0; i < cmds.length(); i++) {
+                JSONObject c = cmds.getJSONObject(i);
+                final String cn = c.getString("c"), ca = c.optString("a", "");
+                handler.post(new Runnable() { @Override public void run() { device.handle(cn, ca); } });
             }
             String t = o.optString("toast", "");
             if (!t.isEmpty()) Toast.makeText(this, t, Toast.LENGTH_SHORT).show();

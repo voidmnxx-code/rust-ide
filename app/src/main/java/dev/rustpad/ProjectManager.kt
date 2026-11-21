@@ -68,7 +68,7 @@ class ProjectManager(private val env: Env, private val assets: android.content.r
             """.trimIndent() + "\n"
         )
         File(dir, "app.properties").writeText(
-            "package=dev.rustpad.apps.$pkgSuffix\nlabel=${name}\nversion_code=1\nversion_name=1.0\npermissions=INTERNET,ACCESS_NETWORK_STATE\nauto_increment=true\nsigning=local\n"
+            "package=dev.rustpad.apps.$pkgSuffix\nlabel=${name}\nversion_code=1\nversion_name=1.0\npermissions=INTERNET,ACCESS_NETWORK_STATE,VIBRATE,CAMERA,ACCESS_FINE_LOCATION,POST_NOTIFICATIONS\nauto_increment=true\nsigning=local\n"
         )
         for (f in listOf("lib.rs", "ui.rs")) {
             val text = assets?.open("templates/android/$f")?.bufferedReader()?.readText()

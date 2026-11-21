@@ -144,10 +144,42 @@ pub struct Ui {
     toast: Option<String>,
     tick_ms: u32,
     back: bool,
+    cmds: Vec<(&'static str, String)>,
 }
 
 impl Ui {
-    pub fn new(root: Node) -> Ui { Ui { root, title: None, toast: None, tick_ms: 0, back: false } }
+    pub fn new(root: Node) -> Ui { Ui { root, title: None, toast: None, tick_ms: 0, back: false, cmds: Vec::new() } }
+
+    // ---- أوامر الجهاز: تُنفَّذ مرة بعد هذا العرض، والنتيجة تصل كحدث ----
+    // (أضف الإذن المناسب في App settings؛ الأذونات الخطرة تُطلب من المستخدم تلقائياً)
+    fn cmd(mut self, c: &'static str, a: impl Into<String>) -> Ui { self.cmds.push((c, a.into())); self }
+    /// اهتزاز بالمللي ثانية.
+    pub fn vibrate(self, ms: u32) -> Ui { self.cmd("vibrate", ms.to_string()) }
+    /// نسخ نص إلى الحافظة.
+    pub fn copy(self, text: &str) -> Ui { self.cmd("copy", text) }
+    /// يطلب نص الحافظة -> حدث "clipboard" (value = النص).
+    pub fn paste(self) -> Ui { self.cmd("paste", "") }
+    /// مشاركة نص عبر تطبيقات أخرى.
+    pub fn share(self, text: &str) -> Ui { self.cmd("share", text) }
+    /// فتح رابط في المتصفح.
+    pub fn open_url(self, url: &str) -> Ui { self.cmd("open_url", url) }
+    /// إشعار (إذن POST_NOTIFICATIONS على أندرويد 13+).
+    pub fn notify(self, title: &str, body: &str) -> Ui { self.cmd("notify", format!("{}\t{}", title, body)) }
+    /// موقع الجهاز -> حدث "location" (value = "lat,lon,accuracy"). إذن ACCESS_FINE_LOCATION.
+    pub fn location(self) -> Ui { self.cmd("location", "") }
+    /// يلتقط صورة -> حدث "photo" (value = مسار الملف؛ اعرضه بـ image_file). إذن CAMERA.
+    pub fn camera(self) -> Ui { self.cmd("camera", "") }
+    /// يختار صورة من المعرض -> حدث "picked" (value = مسار نسخة في ذاكرة التطبيق).
+    pub fn pick_image(self) -> Ui { self.cmd("pick_image", "") }
+    /// المصباح (إذن CAMERA).
+    pub fn flashlight(self, on: bool) -> Ui { self.cmd("flashlight", if on { "on" } else { "off" }) }
+    /// حالة الشبكة -> حدث "network" (value = wifi | mobile | none).
+    pub fn network(self) -> Ui { self.cmd("network", "") }
+    /// يبدأ حساساً ("accel" | "gyro" | "light" | "magnet") -> أحداث "sensor" (value = "kind:x,y,z"). يتوقف عند إخفاء التطبيق.
+    pub fn sensor(self, kind: &str) -> Ui { self.cmd("sensor", kind) }
+    pub fn sensor_stop(self, kind: &str) -> Ui { self.cmd("sensor_stop", kind) }
+    /// يطلب إذناً صراحةً (مثل "CAMERA") -> حدث "permission" (value = "CAMERA:granted" أو ":denied").
+    pub fn permission(self, name: &str) -> Ui { self.cmd("permission", name) }
     /// true = زر الرجوع في النظام يرسل حدث "back" بدل إغلاق التطبيق (أعد false من event لإغلاقه).
     pub fn back(mut self, on: bool) -> Ui { self.back = on; self }
     pub fn title(mut self, t: impl Into<String>) -> Ui { self.title = Some(t.into()); self }
@@ -160,6 +192,14 @@ impl Ui {
         let mut o = String::from("{");
         if let Some(t) = &self.title { o.push_str(&format!("\"title\":{},", esc(t))); }
         if let Some(t) = &self.toast { o.push_str(&format!("\"toast\":{},", esc(t))); }
+        if !self.cmds.is_empty() {
+            o.push_str("\"cmds\":[");
+            for (i, (c, a)) in self.cmds.iter().enumerate() {
+                if i > 0 { o.push(','); }
+                o.push_str(&format!("{{\"c\":{},\"a\":{}}}", esc(c), esc(a)));
+            }
+            o.push_str("],");
+        }
         o.push_str(&format!("\"tick_ms\":{},\"back\":{},\"root\":", self.tick_ms, self.back));
         self.root.write(&mut o);
         o.push('}');
