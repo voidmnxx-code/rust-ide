@@ -46,7 +46,7 @@ if [ -d "$V" ]; then
 else skip "offline-crates stage not installed"; fi
 
 echo "-- crates.io access"
-if out=$(timeout 40 cargo search serde --limit 1 2>&1) && echo "$out" | grep -q '^serde'; then
+if out=$(timeout 40 cargo search serde --limit 1 --registry crates-io 2>&1) && echo "$out" | grep -q '^serde'; then
   ok "cargo can reach crates.io"
 else
   skip "cargo cannot reach crates.io (offline? $(echo "$out" | tail -1))"
