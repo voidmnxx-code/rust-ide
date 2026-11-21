@@ -37,6 +37,10 @@
             android:exported="false" />
 
         <activity
+            android:name=".DependenciesActivity"
+            android:exported="false" />
+
+        <activity
             android:name=".MarkdownActivity"
             android:exported="false" />
 

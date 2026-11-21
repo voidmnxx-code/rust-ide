@@ -45,6 +45,12 @@ if [ -d "$V" ]; then
     t "offline build serde_json" env CARGO_NET_OFFLINE=true cargo build -q )
 else skip "offline-crates stage not installed"; fi
 
+echo "-- crates.io access"
+if out=$(timeout 40 cargo search serde --limit 1 2>&1) && echo "$out" | grep -q '^serde'; then
+  ok "cargo can reach crates.io"
+else
+  skip "cargo cannot reach crates.io (offline? $(echo "$out" | tail -1))"
+fi
 echo "-- sccache"
 if command -v sccache >/dev/null; then
   export SCCACHE_DIR="$HOME/.cache/sccache"

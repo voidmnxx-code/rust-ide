@@ -282,6 +282,12 @@ class EditorActivity : AppCompatActivity() {
 
     private var lastBackup = 0L
 
+    override fun onResume() {
+        super.onResume()
+        val f = current
+        if (f != null && f.name == "Cargo.toml" && !dirty && f.exists() && f.readText() != editor.text.toString()) openFile(f, true)
+    }
+
     override fun onStop() {
         super.onStop()
         if (!settings.autoBackup) return
@@ -1220,6 +1226,10 @@ class EditorActivity : AppCompatActivity() {
         item("Symbols in this file...") { outline() }
         item("Toggle comment") { toggleComment() }
         item("Duplicate line") { duplicateLine() }
+        item("Dependencies...") {
+            save()
+            startActivity(Intent(this, DependenciesActivity::class.java).putExtra("project", project.path))
+        }
         item("Format file (rustfmt)") { formatFile() }
         item("Find references") { findReferences() }
         item("Rename symbol...") { renameSymbol() }
